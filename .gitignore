@@ -1,0 +1,58 @@
+# ---------------------------------------------------------------------------
+# Zellie Fleurs — Git ignore rules
+# Keep private data, credentials, logs, backups and customer uploads out of Git.
+# ---------------------------------------------------------------------------
+
+# Application data (SQLite database and its WAL/SHM/journal companions)
+/data/
+!/data/.gitkeep
+
+# SQLite databases anywhere in the project
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+
+# Credentials, secrets and environment files
+/data/initial_admin_credentials.txt
+initial_admin_credentials.txt
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets.php
+credentials.php
+
+# Logs and runtime artefacts
+*.log
+*.pid
+*.sock
+
+# Uploaded customer/product files (preserve directory protections)
+/public/uploads/*
+!/public/uploads/.htaccess
+!/public/uploads/index.html
+
+# Backups and archives
+*.bak
+*.backup
+*.old
+*.orig
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+/backups/
+
+# Local tooling and OS/editor files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*~

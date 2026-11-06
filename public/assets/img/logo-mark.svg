@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Zellie Fleurs floral mark">
+  <g fill="none" stroke="#8f4e59" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M32 56V33"/>
+    <path d="M32 44c-7 0-12-4-13-11 7-1 12 3 13 11Z" fill="#e9eee7" stroke="#6f7f6a"/>
+    <path d="M32 40c7 0 12-4 13-11-7-1-12 3-13 11Z" fill="#e9eee7" stroke="#6f7f6a"/>
+    <path d="M32 33c-8-1-13-7-12-16 8 0 13 6 12 16Z" fill="#f3d9dc"/>
+    <path d="M32 33c8-1 13-7 12-16-8 0-13 6-12 16Z" fill="#f3d9dc"/>
+    <path d="M32 33c-5-6-5-14 0-19 5 5 5 13 0 19Z" fill="#f7e7e9"/>
+    <circle cx="32" cy="33" r="3.2" fill="#b76e79" stroke="none"/>
+  </g>
+</svg>
