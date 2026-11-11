@@ -51,6 +51,20 @@ function zf_ensure_schema(PDO $db, string $dbPath): void
         )
     ");
 
+    // SQLite has no ADD COLUMN IF NOT EXISTS, so guard with table_info.
+    // session_invalid_before stores a PHP time() stamp: any admin session
+    // that logged in before it is expired (password-change invalidation).
+    $hasInvalidBefore = false;
+    foreach ($db->query('PRAGMA table_info(admin_users)')->fetchAll(PDO::FETCH_ASSOC) as $column) {
+        if (($column['name'] ?? '') === 'session_invalid_before') {
+            $hasInvalidBefore = true;
+            break;
+        }
+    }
+    if (!$hasInvalidBefore) {
+        $db->exec('ALTER TABLE admin_users ADD COLUMN session_invalid_before INTEGER NOT NULL DEFAULT 0');
+    }
+
     $db->exec("
         CREATE TABLE IF NOT EXISTS login_attempts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

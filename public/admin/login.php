@@ -12,6 +12,15 @@ $settings = zf_settings();
 $error = '';
 $username = '';
 
+// Expired admin sessions are bounced here with ?expired=1 (the admin keys
+// only — never the whole session — were cleared). A password change also
+// forces a fresh sign-in with ?changed=1. Both render as generic notices.
+if (isset($_GET['expired'])) {
+    $error = 'Your session has expired. Please sign in again.';
+} elseif (isset($_GET['changed'])) {
+    $error = 'Your password has been updated. Please sign in with your new password.';
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $username = zf_safe_text($_POST['username'] ?? '');
 

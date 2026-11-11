@@ -37,8 +37,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         );
 
         if ($result['ok']) {
-            zf_flash('success', 'Administrator password updated.');
-            zf_redirect('/admin/settings.php');
+            // The password change invalidated every admin session for this
+            // account (including this one), so drop the admin keys here and
+            // send the admin to a clean sign-in instead of bouncing through
+            // the expiry redirect on the settings page.
+            zf_clear_admin_session_keys();
+            zf_redirect('/admin/login.php?changed=1');
         }
         $passwordErrors[] = $result['error'];
     }

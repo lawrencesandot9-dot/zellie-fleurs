@@ -76,6 +76,24 @@ zf_ensure_schema($db, $dbPath);
 check('schema is idempotent (no duplicate seed products)', (int) $db->query('SELECT COUNT(*) FROM products')->fetchColumn() === $productCount);
 check('integrity check passes', $db->query('PRAGMA integrity_check')->fetchColumn() === 'ok');
 
+section('Admin session migration');
+$invalidBeforeColumn = null;
+foreach ($db->query('PRAGMA table_info(admin_users)')->fetchAll(PDO::FETCH_ASSOC) as $column) {
+    if (($column['name'] ?? '') === 'session_invalid_before') {
+        $invalidBeforeColumn = $column;
+    }
+}
+check('admin_users has session_invalid_before for session invalidation', $invalidBeforeColumn !== null);
+check('session_invalid_before defaults to 0', $invalidBeforeColumn !== null && (int) $invalidBeforeColumn['dflt_value'] === 0);
+zf_ensure_schema($db, $dbPath);
+$invalidBeforeCopies = 0;
+foreach ($db->query('PRAGMA table_info(admin_users)')->fetchAll(PDO::FETCH_ASSOC) as $column) {
+    if (($column['name'] ?? '') === 'session_invalid_before') {
+        $invalidBeforeCopies++;
+    }
+}
+check('admin session migration is idempotent on a second run', $invalidBeforeCopies === 1);
+
 section('Storefront queries');
 $searchResults = zf_get_products($db, ['search' => 'tulip', 'active_only' => true]);
 check('product search finds tulips', $searchResults !== [] && stripos($searchResults[0]['name'], 'tulip') !== false);
@@ -185,6 +203,13 @@ check('invalid login is rejected', $badLogin['ok'] === false);
 $goodLogin = zf_auth_login($db, 'admin', 'TestAdmin123!');
 check('valid login succeeds', $goodLogin['ok'] === true, $goodLogin['error'] ?? '');
 check('session is authenticated after login', zf_admin_logged_in() === true);
+
+// Cross-session invalidation: stamping session_invalid_before ahead of the
+// session's login time must expire it (and clear only the admin keys).
+$db->prepare('UPDATE admin_users SET session_invalid_before = ? WHERE id = ?')
+    ->execute([time() + 60, (int) $admin['id']]);
+check('a session predating session_invalid_before is expired', zf_admin_logged_in() === false);
+check('only admin keys are cleared, the session itself survives', empty($_SESSION['admin_id']) && empty($_SESSION['admin_login_at']) && isset($_SESSION['csrf_token']));
 zf_auth_logout();
 check('logout clears the session', zf_admin_logged_in() === false);
 
@@ -198,6 +223,19 @@ for ($i = 0; $i < 5; $i++) {
 }
 $locked = zf_auth_login($db, 'admin', 'NewAdminPass456!');
 check('repeated failed logins trigger a temporary lockout', $locked['ok'] === false && stripos($locked['error'], 'Too many') !== false);
+
+section('Admin session expiry verdicts');
+$now = time();
+check('fresh admin session is not expired', zf_admin_session_expired(['admin_login_at' => $now, 'admin_last_seen' => $now], $now, 1800, 28800) === false);
+check('idle exactly at the limit is not expired', zf_admin_session_expired(['admin_login_at' => $now - 1800, 'admin_last_seen' => $now - 1800], $now, 1800, 28800) === false);
+check('idle one tick past the limit is expired', zf_admin_session_expired(['admin_login_at' => $now - 1801, 'admin_last_seen' => $now - 1801], $now, 1800, 28800) === true);
+check('recent activity within the idle window is not expired', zf_admin_session_expired(['admin_login_at' => $now - 20000, 'admin_last_seen' => $now - 100], $now, 1800, 28800) === false);
+check('idle past the limit expires despite recent activity', zf_admin_session_expired(['admin_login_at' => $now - 20000, 'admin_last_seen' => $now - 2000], $now, 1800, 28800) === true);
+check('absolute exactly at the limit is not expired', zf_admin_session_expired(['admin_login_at' => $now - 28800, 'admin_last_seen' => $now], $now, 1800, 28800) === false);
+check('absolute one tick past the limit is expired even with recent activity', zf_admin_session_expired(['admin_login_at' => $now - 28801, 'admin_last_seen' => $now], $now, 1800, 28800) === true);
+check('missing admin_last_seen falls back to admin_login_at', zf_admin_session_expired(['admin_login_at' => $now - 100], $now, 1800, 28800) === false);
+check('missing timestamps are treated as expired', zf_admin_session_expired([], $now, 1800, 28800) === true);
+check('a missing login timestamp is treated as expired', zf_admin_session_expired(['admin_last_seen' => $now], $now, 1800, 28800) === true);
 
 section('Product management');
 $errors = [];

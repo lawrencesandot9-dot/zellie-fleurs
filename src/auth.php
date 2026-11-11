@@ -8,11 +8,115 @@ declare(strict_types=1);
 const ZF_LOGIN_WINDOW_MINUTES = 15;
 const ZF_LOGIN_MAX_ATTEMPTS = 5;
 
+/**
+ * Admin session lifetime policy.
+ *
+ * Production defaults: 30 minutes of inactivity and an 8-hour absolute cap.
+ * The ZF_ADMIN_IDLE_TIMEOUT and ZF_ADMIN_ABSOLUTE_TIMEOUT environment
+ * variables override them at runtime — this exists purely so the HTTP test
+ * harness can age sessions quickly on an isolated server; deployments that
+ * do not set these variables keep the constants above unchanged.
+ */
+const ZF_ADMIN_IDLE_TIMEOUT = 1800;
+const ZF_ADMIN_ABSOLUTE_TIMEOUT = 28800;
+
+function zf_admin_timeouts(): array
+{
+    return [
+        'idle' => (int) (getenv('ZF_ADMIN_IDLE_TIMEOUT') ?: ZF_ADMIN_IDLE_TIMEOUT),
+        'absolute' => (int) (getenv('ZF_ADMIN_ABSOLUTE_TIMEOUT') ?: ZF_ADMIN_ABSOLUTE_TIMEOUT),
+    ];
+}
+
+/**
+ * Pure expiry verdict for an admin session.
+ *
+ * Idle timeout is measured from the last observed activity
+ * (admin_last_seen, falling back to the login time); the absolute timeout
+ * is measured from the login time itself. A session that is exactly at a
+ * limit is still valid; one tick beyond it is not. Missing or non-positive
+ * timestamps are treated as expired so a malformed session can never stay
+ * authenticated.
+ */
+function zf_admin_session_expired(array $session, int $now, int $idle, int $absolute): bool
+{
+    $loginAt = (int) ($session['admin_login_at'] ?? 0);
+    $lastSeen = (int) ($session['admin_last_seen'] ?? $loginAt);
+
+    if ($loginAt <= 0 || $lastSeen <= 0) {
+        return true;
+    }
+
+    if ($now - $lastSeen > $idle) {
+        return true;
+    }
+
+    return $now - $loginAt > $absolute;
+}
+
+/**
+ * Remove ONLY the admin keys from the session. Storefront and guest state
+ * (cart, checkout tokens, flashes, CSRF) lives in the same shared session
+ * and must survive an admin expiry untouched.
+ */
+function zf_clear_admin_session_keys(): void
+{
+    unset(
+        $_SESSION['admin_id'],
+        $_SESSION['admin_username'],
+        $_SESSION['admin_login_at'],
+        $_SESSION['admin_last_seen']
+    );
+}
+
+function zf_expire_admin_session(): void
+{
+    zf_clear_admin_session_keys();
+
+    if (PHP_SAPI === 'cli') {
+        return; // CLI tests inspect the cleared state directly.
+    }
+
+    zf_redirect('login.php?expired=1');
+}
+
 function zf_admin_logged_in(): bool
 {
     zf_session_start();
 
-    return !empty($_SESSION['admin_id']) && !empty($_SESSION['admin_username']);
+    if (empty($_SESSION['admin_id']) || empty($_SESSION['admin_username'])) {
+        return false;
+    }
+
+    $timeouts = zf_admin_timeouts();
+    if (zf_admin_session_expired($_SESSION, time(), $timeouts['idle'], $timeouts['absolute'])) {
+        zf_expire_admin_session();
+        return false;
+    }
+
+    // Cross-session invalidation: changing the password stamps
+    // admin_users.session_invalid_before, so every admin session that logged
+    // in before that moment is dead. A missing admin row expires too.
+    global $db;
+    if (isset($db) && $db instanceof PDO) {
+        try {
+            $stmt = $db->prepare('SELECT session_invalid_before FROM admin_users WHERE id = ?');
+            $stmt->execute([(int) $_SESSION['admin_id']]);
+            $invalidBefore = $stmt->fetchColumn();
+
+            if ($invalidBefore === false
+                || (int) $_SESSION['admin_login_at'] < (int) $invalidBefore) {
+                zf_expire_admin_session();
+                return false;
+            }
+        } catch (Throwable $e) {
+            error_log('[Zellie Fleurs] Admin session validation skipped: ' . $e->getMessage());
+        }
+    }
+
+    $_SESSION['admin_last_seen'] = time();
+
+    return true;
 }
 
 function zf_current_admin(): ?array
@@ -132,7 +236,22 @@ function zf_change_admin_password(PDO $db, int $adminId, string $current, string
     }
 
     $update = $db->prepare('UPDATE admin_users SET password_hash = ? WHERE id = ?');
-    $update->execute([password_hash($new, PASSWORD_DEFAULT), $adminId]);
+
+    // The hash update and the session-invalidation stamp must land together:
+    // once the password changes, every admin session that logged in before
+    // now (including the changer's own) has to be dead.
+    $db->beginTransaction();
+    try {
+        $update->execute([password_hash($new, PASSWORD_DEFAULT), $adminId]);
+
+        $invalidate = $db->prepare('UPDATE admin_users SET session_invalid_before = ? WHERE id = ?');
+        $invalidate->execute([time(), $adminId]);
+
+        $db->commit();
+    } catch (Throwable $e) {
+        $db->rollBack();
+        throw $e;
+    }
 
     return ['ok' => true, 'error' => ''];
 }

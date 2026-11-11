@@ -11,12 +11,15 @@ SERVER_LOG="$TMP/server.log"
 PASSED=0
 FAILED=0
 SERVER_PID=""
+ISO_PID=""
 
 cleanup() {
-    if [ -n "$SERVER_PID" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
-        kill "$SERVER_PID" 2>/dev/null || true
-        wait "$SERVER_PID" 2>/dev/null || true
-    fi
+    for pid in "$SERVER_PID" "$ISO_PID"; do
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+        fi
+    done
     rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -717,6 +720,230 @@ if contains "$TMP/locked-valid.html" "No order found" && contains "$TMP/locked-i
     pass "locked responses are indistinguishable from a normal miss"
 else
     fail "locked responses are indistinguishable from a normal miss"
+fi
+
+# ---------------------------------------------------------------------------
+# Admin session expiration & invalidation.
+# Runs on its OWN second php -S instance (port ZF_TEST_PORT2, default 8124)
+# with its own temp DB and short timeout env overrides, so sessions can be
+# aged in seconds without touching the main server, its DB, or data/shop.db.
+# Placed after the rate-limit block because it uses an entirely separate
+# server; nothing above depends on it and nothing below follows it.
+# ---------------------------------------------------------------------------
+echo ""
+echo "Admin session expiration and invalidation (isolated server on port ${ZF_TEST_PORT2:-8124})"
+echo "-------------------------------------------------------------------------------------------"
+PORT2="${ZF_TEST_PORT2:-8124}"
+BASE2="http://127.0.0.1:${PORT2}"
+JAR2="$TMP/jar2.txt"
+JAR2_OLD="$TMP/jar2-old.txt"
+ISO_LOG="$TMP/server2.log"
+
+ZF_DB_PATH="$TMP/shop2.db" \
+ZF_ADMIN_USER="admin" \
+ZF_ADMIN_PASSWORD="HttpTest123!" \
+ZF_ADMIN_IDLE_TIMEOUT=2 \
+ZF_ADMIN_ABSOLUTE_TIMEOUT=3 \
+ZF_DEBUG=0 \
+php -S "127.0.0.1:${PORT2}" -t "$ROOT/public" >"$ISO_LOG" 2>&1 &
+ISO_PID=$!
+
+for _ in $(seq 1 40); do
+    if curl -sS -o /dev/null "$BASE2/" 2>/dev/null; then break; fi
+    sleep 0.2
+done
+
+sid_of() {
+    awk '$6 == "ZELLIEFLEURS" { print $7 }' "$1" 2>/dev/null | tail -n 1
+}
+
+# Login on the isolated server; capture the pre- and post-login session ids.
+curl -sS -b "$JAR2" -c "$JAR2" -o "$TMP/iso-login.html" "$BASE2/admin/login.php"
+SID_BEFORE=$(sid_of "$JAR2")
+ISO_CSRF=$(extract_hidden csrf_token < "$TMP/iso-login.html")
+[ -n "$ISO_CSRF" ] && pass "isolated login form includes a CSRF token" || fail "isolated login form includes a CSRF token"
+
+ISO_LOGIN=$(curl -sS -b "$JAR2" -c "$JAR2" -o "$TMP/iso-login-post.html" -w '%{http_code}' \
+    --data-urlencode "csrf_token=$ISO_CSRF" \
+    --data-urlencode "username=admin" \
+    --data-urlencode "password=HttpTest123!" \
+    "$BASE2/admin/login.php")
+SID_AFTER=$(sid_of "$JAR2")
+if [ "$ISO_LOGIN" = "303" ] && [ -n "$SID_BEFORE" ] && [ -n "$SID_AFTER" ] && [ "$SID_BEFORE" != "$SID_AFTER" ]; then
+    pass "login regenerates the session id"
+else
+    fail "login regenerates the session id" "status $ISO_LOGIN before '$SID_BEFORE' after '$SID_AFTER'"
+fi
+
+DASH2=$(curl -sS -b "$JAR2" -c "$JAR2" -o "$TMP/iso-dash.html" -w '%{http_code}' "$BASE2/admin/index.php")
+[ "$DASH2" = "200" ] && pass "immediate admin access works after login" || fail "immediate admin access works after login" "status $DASH2"
+
+# Idle timeout: 2s of inactivity must bounce the admin session to login.
+sleep 2.5
+ISO_EXPIRED_STATUS=$(curl -sS -b "$JAR2" -c "$JAR2" -o /dev/null -w '%{http_code}|%{redirect_url}' "$BASE2/admin/index.php")
+case "$ISO_EXPIRED_STATUS" in
+    303*login.php*) pass "idle timeout redirects the admin session to login" ;;
+    *) fail "idle timeout redirects the admin session to login" "$ISO_EXPIRED_STATUS" ;;
+esac
+curl -sS -b "$JAR2" -c "$JAR2" -o "$TMP/iso-expired.html" "$BASE2/admin/login.php?expired=1"
+contains "$TMP/iso-expired.html" "Your session has expired" && contains "$TMP/iso-expired.html" "Please sign in again" \
+    && pass "generic expiration message renders on the login page" \
+    || fail "generic expiration message renders on the login page"
+
+# The shared session must survive: only admin keys were cleared, so the
+# storefront keeps serving the SAME session id (a session_destroy would
+# mint a brand-new id under use_strict_mode on the next request).
+STORE2=$(curl -sS -b "$JAR2" -c "$JAR2" -o "$TMP/iso-store.html" -w '%{http_code}' "$BASE2/")
+SID_EXP=$(sid_of "$JAR2")
+if [ "$STORE2" = "200" ] && [ -n "$SID_EXP" ] && [ "$SID_EXP" = "$SID_AFTER" ]; then
+    pass "storefront keeps serving the shared session after admin expiry"
+else
+    fail "storefront keeps serving the shared session after admin expiry" "status $STORE2 sid '$SID_EXP' expected '$SID_AFTER'"
+fi
+
+# Activity refresh: re-login, then two admin requests 1.2s apart must both
+# be authorized (2.4s since login would exceed the 2s idle limit if the
+# refresh were broken). Then the absolute cap (3s since login) must expire
+# the session even though activity was recent.
+rm -f "$JAR2"
+curl -sS -b "$JAR2" -c "$JAR2" -o "$TMP/iso-login2.html" "$BASE2/admin/login.php"
+ISO_CSRF=$(extract_hidden csrf_token < "$TMP/iso-login2.html")
+ISO_LOGIN2=$(curl -sS -b "$JAR2" -c "$JAR2" -o /dev/null -w '%{http_code}' \
+    --data-urlencode "csrf_token=$ISO_CSRF" \
+    --data-urlencode "username=admin" \
+    --data-urlencode "password=HttpTest123!" \
+    "$BASE2/admin/login.php")
+[ "$ISO_LOGIN2" = "303" ] && pass "re-login after expiry works" || fail "re-login after expiry works" "status $ISO_LOGIN2"
+
+sleep 1.2
+A1=$(curl -sS -b "$JAR2" -c "$JAR2" -o /dev/null -w '%{http_code}' "$BASE2/admin/index.php")
+sleep 1.2
+A2=$(curl -sS -b "$JAR2" -c "$JAR2" -o /dev/null -w '%{http_code}' "$BASE2/admin/index.php")
+if [ "$A1" = "200" ] && [ "$A2" = "200" ]; then
+    pass "admin activity refreshes the idle timer"
+else
+    fail "admin activity refreshes the idle timer" "first $A1 second $A2"
+fi
+
+sleep 1.2
+A3=$(curl -sS -b "$JAR2" -c "$JAR2" -o /dev/null -w '%{http_code}|%{redirect_url}' "$BASE2/admin/index.php")
+case "$A3" in
+    303*login.php*) pass "absolute timeout expires the session despite recent activity" ;;
+    *) fail "absolute timeout expires the session despite recent activity" "$A3" ;;
+esac
+
+# Once expired, no protected page is reachable with the same jar.
+O1=$(curl -sS -b "$JAR2" -c "$JAR2" -o /dev/null -w '%{http_code}|%{redirect_url}' "$BASE2/admin/orders.php")
+O2=$(curl -sS -b "$JAR2" -c "$JAR2" -o /dev/null -w '%{http_code}|%{redirect_url}' "$BASE2/admin/products.php")
+case "$O1" in
+    303*login.php*) pass "expired session cannot access orders.php" ;;
+    *) fail "expired session cannot access orders.php" "$O1" ;;
+esac
+case "$O2" in
+    303*login.php*) pass "expired session cannot access products.php" ;;
+    *) fail "expired session cannot access products.php" "$O2" ;;
+esac
+
+# Logout invalidation: keep a copy of the pre-logout jar and prove it is
+# dead after the CSRF-protected logout POST.
+rm -f "$JAR2"
+curl -sS -b "$JAR2" -c "$JAR2" -o "$TMP/iso-login3.html" "$BASE2/admin/login.php"
+ISO_CSRF=$(extract_hidden csrf_token < "$TMP/iso-login3.html")
+curl -sS -b "$JAR2" -c "$JAR2" -o /dev/null \
+    --data-urlencode "csrf_token=$ISO_CSRF" \
+    --data-urlencode "username=admin" \
+    --data-urlencode "password=HttpTest123!" \
+    "$BASE2/admin/login.php"
+curl -sS -b "$JAR2" -c "$JAR2" -o "$TMP/iso-logout-pre.html" "$BASE2/admin/index.php"
+LOGOUT_CSRF=$(extract_hidden csrf_token < "$TMP/iso-logout-pre.html")
+cp "$JAR2" "$JAR2_OLD"
+LOGOUT2=$(curl -sS -b "$JAR2" -c "$JAR2" -o /dev/null -w '%{http_code}' \
+    --data-urlencode "csrf_token=$LOGOUT_CSRF" \
+    "$BASE2/admin/logout.php")
+OLD_JAR_STATUS=$(curl -sS -b "$JAR2_OLD" -o /dev/null -w '%{http_code}|%{redirect_url}' "$BASE2/admin/index.php")
+if [ "$LOGOUT2" = "303" ] && case "$OLD_JAR_STATUS" in 303*login.php*) true ;; *) false ;; esac; then
+    pass "logout invalidates the old session cookie"
+else
+    fail "logout invalidates the old session cookie" "logout $LOGOUT2 old-jar $OLD_JAR_STATUS"
+fi
+
+# Standard error message for a wrong password on the isolated server too.
+rm -f "$JAR2"
+curl -sS -b "$JAR2" -c "$JAR2" -o "$TMP/iso-login4.html" "$BASE2/admin/login.php"
+ISO_CSRF=$(extract_hidden csrf_token < "$TMP/iso-login4.html")
+WRONG2=$(curl -sS -b "$JAR2" -c "$JAR2" -o "$TMP/iso-wrong.html" -w '%{http_code}' \
+    --data-urlencode "csrf_token=$ISO_CSRF" \
+    --data-urlencode "username=admin" \
+    --data-urlencode "password=still-wrong-password" \
+    "$BASE2/admin/login.php")
+[ "$WRONG2" = "200" ] && contains "$TMP/iso-wrong.html" "Invalid username or password" \
+    && pass "isolated server rejects a wrong password with the standard error" \
+    || fail "isolated server rejects a wrong password with the standard error" "status $WRONG2"
+
+# Password-change invalidation — LAST on this server because it kills every
+# session for the account. Uses the exact POST fields of settings.php.
+rm -f "$JAR2"
+curl -sS -b "$JAR2" -c "$JAR2" -o "$TMP/iso-login5.html" "$BASE2/admin/login.php"
+ISO_CSRF=$(extract_hidden csrf_token < "$TMP/iso-login5.html")
+PW_LOGIN=$(curl -sS -b "$JAR2" -c "$JAR2" -o /dev/null -w '%{http_code}' \
+    --data-urlencode "csrf_token=$ISO_CSRF" \
+    --data-urlencode "username=admin" \
+    --data-urlencode "password=HttpTest123!" \
+    "$BASE2/admin/login.php")
+cp "$JAR2" "$JAR2_OLD"
+curl -sS -b "$JAR2" -c "$JAR2" -o "$TMP/iso-settings.html" "$BASE2/admin/settings.php"
+SET_CSRF=$(extract_hidden csrf_token < "$TMP/iso-settings.html")
+PW_CHANGE=$(curl -sS -b "$JAR2" -c "$JAR2" -o "$TMP/iso-pwchange.html" -D "$TMP/iso-pwchange-headers.txt" -w '%{http_code}' \
+    --data-urlencode "csrf_token=$SET_CSRF" \
+    --data-urlencode "action=change_password" \
+    --data-urlencode "current_password=HttpTest123!" \
+    --data-urlencode "new_password=NewIsoPass456!" \
+    --data-urlencode "confirm_password=NewIsoPass456!" \
+    "$BASE2/admin/settings.php")
+PW_LOCATION=$(php -r '$h=file_get_contents($argv[1]); if(preg_match("/^Location:\\s*(.+)$/mi",$h,$m)) echo $m[1];' "$TMP/iso-pwchange-headers.txt")
+if [ "$PW_CHANGE" = "303" ] && [ "$PW_LOGIN" = "303" ] && grep -Fq "login.php?changed=1" <<<"$PW_LOCATION"; then
+    pass "password change redirects to the sign-in page with a notice"
+else
+    fail "password change redirects to the sign-in page with a notice" "login $PW_LOGIN change $PW_CHANGE location '$PW_LOCATION'"
+fi
+
+OLD_JAR_PW=$(curl -sS -b "$JAR2_OLD" -o /dev/null -w '%{http_code}|%{redirect_url}' "$BASE2/admin/index.php")
+case "$OLD_JAR_PW" in
+    303*login.php*) pass "password change invalidates all existing admin sessions" ;;
+    *) fail "password change invalidates all existing admin sessions" "$OLD_JAR_PW" ;;
+esac
+
+# The new password must work; the old one must be rejected.
+rm -f "$JAR2"
+curl -sS -b "$JAR2" -c "$JAR2" -o "$TMP/iso-login6.html" "$BASE2/admin/login.php"
+ISO_CSRF=$(extract_hidden csrf_token < "$TMP/iso-login6.html")
+NEW_LOGIN=$(curl -sS -b "$JAR2" -c "$JAR2" -o /dev/null -w '%{http_code}' \
+    --data-urlencode "csrf_token=$ISO_CSRF" \
+    --data-urlencode "username=admin" \
+    --data-urlencode "password=NewIsoPass456!" \
+    "$BASE2/admin/login.php")
+NEW_DASH=$(curl -sS -b "$JAR2" -c "$JAR2" -o "$TMP/iso-dash3.html" -w '%{http_code}' "$BASE2/admin/index.php")
+[ "$NEW_LOGIN" = "303" ] && [ "$NEW_DASH" = "200" ] \
+    && pass "login with the new password succeeds" \
+    || fail "login with the new password succeeds" "login $NEW_LOGIN dash $NEW_DASH"
+
+rm -f "$JAR2"
+curl -sS -b "$JAR2" -c "$JAR2" -o "$TMP/iso-login7.html" "$BASE2/admin/login.php"
+ISO_CSRF=$(extract_hidden csrf_token < "$TMP/iso-login7.html")
+OLD_PW=$(curl -sS -b "$JAR2" -c "$JAR2" -o "$TMP/iso-oldpw.html" -w '%{http_code}' \
+    --data-urlencode "csrf_token=$ISO_CSRF" \
+    --data-urlencode "username=admin" \
+    --data-urlencode "password=HttpTest123!" \
+    "$BASE2/admin/login.php")
+[ "$OLD_PW" = "200" ] && contains "$TMP/iso-oldpw.html" "Invalid username or password" \
+    && pass "old password is rejected after the change" \
+    || fail "old password is rejected after the change" "status $OLD_PW"
+
+if grep -Eq 'PHP (Warning|Fatal error|Parse error)' "$ISO_LOG"; then
+    fail "isolated server log contains no PHP warnings or fatal errors"
+    grep -E 'PHP (Warning|Fatal error|Parse error)' "$ISO_LOG" | head -5
+else
+    pass "isolated server log contains no PHP warnings or fatal errors"
 fi
 
 echo ""
