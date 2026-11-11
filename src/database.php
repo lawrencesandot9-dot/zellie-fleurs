@@ -61,6 +61,14 @@ function zf_ensure_schema(PDO $db, string $dbPath): void
     ");
 
     $db->exec("
+        CREATE TABLE IF NOT EXISTS lookup_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ip_address TEXT NOT NULL,
+            attempted_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+        )
+    ");
+
+    $db->exec("
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL DEFAULT ''
@@ -72,6 +80,7 @@ function zf_ensure_schema(PDO $db, string $dbPath): void
     $db->exec('CREATE INDEX IF NOT EXISTS idx_orders_status ON orders (status)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_orders_created ON orders (created_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_login_attempts_time ON login_attempts (attempted_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_lookup_attempts_ip_time ON lookup_attempts (ip_address, attempted_at)');
     $db->exec('PRAGMA user_version = 1');
 
     zf_seed_settings($db);

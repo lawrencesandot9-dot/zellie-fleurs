@@ -184,7 +184,7 @@ CHECKOUT=$(curl -sS -b "$JAR" -c "$JAR" -o "$TMP/checkout-response.html" -D "$TM
     --data-urlencode "payment_method=COD" \
     --data-urlencode "gcash_ref=" \
     "$BASE/checkout.php")
-ORDER_CODE=$(php -r '$h=file_get_contents($argv[1]); if(preg_match("/^Location:\\s*(.+)$/mi",$h,$m) && preg_match("/ZF-[A-Z0-9]{6}/",$m[1],$c)) echo $c[0];' "$TMP/checkout-headers.txt")
+ORDER_CODE=$(php -r '$h=file_get_contents($argv[1]); if(preg_match("/^Location:\\s*(.+)$/mi",$h,$m) && preg_match("/ZF-[A-HJ-NP-Z2-9]{12}/",$m[1],$c)) echo $c[0];' "$TMP/checkout-headers.txt")
 [ "$CHECKOUT" = "303" ] && [ -n "$ORDER_CODE" ] && pass "valid order is created and redirects to confirmation" || fail "valid order is created and redirects to confirmation" "status $CHECKOUT code $ORDER_CODE"
 
 CONFIRM=$(curl -sS -b "$JAR" -c "$JAR" -o "$TMP/confirmation.html" -w '%{http_code}' "$BASE/checkout.php?order=$ORDER_CODE")
@@ -439,7 +439,7 @@ GOOD=$(curl -sS -b "$JAR" -c "$JAR" -o "$TMP/good-response.html" -D "$TMP/good-h
     --data-urlencode "card_message=Slow and steady" \
     --data-urlencode "payment_method=COD" \
     "$BASE/checkout.php")
-GOOD_ORDER_CODE=$(php -r '$h=file_get_contents($argv[1]); if(preg_match("/^Location:\\s*(.+)$/mi",$h,$m) && preg_match("/ZF-[A-Z0-9]{6}/",$m[1],$c)) echo $c[0];' "$TMP/good-headers.txt")
+GOOD_ORDER_CODE=$(php -r '$h=file_get_contents($argv[1]); if(preg_match("/^Location:\\s*(.+)$/mi",$h,$m) && preg_match("/ZF-[A-HJ-NP-Z2-9]{12}/",$m[1],$c)) echo $c[0];' "$TMP/good-headers.txt")
 [ "$GOOD" = "303" ] && [ -n "$GOOD_ORDER_CODE" ] && pass ">2s submit with valid token creates an order" || fail ">2s submit with valid token creates an order" "status $GOOD code $GOOD_ORDER_CODE"
 STOCK3_AFTER=$(sqlite3 "$TMP/shop.db" "SELECT stock_quantity FROM products WHERE id = 3;")
 [ "$STOCK3_AFTER" = "$((STOCK3_BEFORE - 1))" ] && pass "order creation deducted stock" || fail "order creation deducted stock" "before $STOCK3_BEFORE after $STOCK3_AFTER"
@@ -507,7 +507,7 @@ XSS=$(curl -sS -b "$JAR" -c "$JAR" -o "$TMP/xss-response.html" -D "$TMP/xss-head
     --data-urlencode "card_message=<img src=x onerror=alert(2)>" \
     --data-urlencode "payment_method=COD" \
     "$BASE/checkout.php")
-XSS_ORDER_CODE=$(php -r '$h=file_get_contents($argv[1]); if(preg_match("/^Location:\\s*(.+)$/mi",$h,$m) && preg_match("/ZF-[A-Z0-9]{6}/",$m[1],$c)) echo $c[0];' "$TMP/xss-headers.txt")
+XSS_ORDER_CODE=$(php -r '$h=file_get_contents($argv[1]); if(preg_match("/^Location:\\s*(.+)$/mi",$h,$m) && preg_match("/ZF-[A-HJ-NP-Z2-9]{12}/",$m[1],$c)) echo $c[0];' "$TMP/xss-headers.txt")
 [ "$XSS" = "303" ] && [ -n "$XSS_ORDER_CODE" ] && pass "XSS payload order is accepted for storage" || fail "XSS payload order is accepted for storage" "status $XSS code $XSS_ORDER_CODE"
 curl -sS -b "$JAR" -c "$JAR" -o "$TMP/xss-confirm.html" "$BASE/checkout.php?order=$XSS_ORDER_CODE"
 curl -sS -o "$TMP/xss-track.html" "$BASE/track.php?code=$XSS_ORDER_CODE"
@@ -520,7 +520,7 @@ grep -Fq '&lt;svg/onload=alert(3)&gt;' "$TMP/xss-confirm.html" && \
       pass "delivery_address payload never rendered unescaped on confirmation or track" || \
       fail "delivery_address payload never rendered unescaped" "raw svg payload on a page"; }
 grep -Fq '<script>alert(1)' "$TMP/xss-confirm.html" && fail "confirmation page has no unescaped script" "raw payload found" || pass "confirmation page has no unescaped script"
-grep -Fq '&lt;script&gt;alert(1)' "$TMP/xss-track.html" && pass "track.php escapes customer_name" || fail "track.php escapes customer_name"
+grep -Fq 'Xss &lt;.' "$TMP/xss-track.html" && pass "track.php escapes customer_name" || fail "track.php escapes customer_name"
 if grep -Eq '<(script|img|svg)[^>]*alert' "$TMP/xss-track.html"; then
     fail "track.php has no unescaped script" "raw payload found"
 else
@@ -586,6 +586,138 @@ ASSET_CSS=$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/assets/css/style.css?
 ASSET_JS=$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/assets/js/app.js?v=20261111-admin")
 [ "$ASSET_CSS" = "200" ] && pass "versioned stylesheet request returns 200" || fail "versioned stylesheet request returns 200" "got $ASSET_CSS"
 [ "$ASSET_JS" = "200" ] && pass "versioned script request returns 200" || fail "versioned script request returns 200" "got $ASSET_JS"
+
+# ---------------------------------------------------------------------------
+# Appended security remediation coverage.
+# Order matters: the checkout-session tests below must run BEFORE the rate
+# limit block (this suite shares one IP — a lockout would poison them), so
+# the rate limit section is the very last block in the file.
+# ---------------------------------------------------------------------------
+echo ""
+echo "Confirmation session binding"
+echo "----------------------------"
+# (a) Owner path: the ordering session that placed the order still sees the
+# confirmation, with the customer's own details. NOTE: GOOD_ORDER_CODE was
+# placed after the admin logout (which destroys the shared session), so its
+# binding is intact; the first ORDER_CODE predates it and is track-only.
+OWN_CONFIRM_CODE=$(curl -sS -b "$JAR" -c "$JAR" -o "$TMP/own-confirm.html" -w '%{http_code}' "$BASE/checkout.php?order=$GOOD_ORDER_CODE")
+if [ "$OWN_CONFIRM_CODE" = "200" ] && contains "$TMP/own-confirm.html" "$GOOD_ORDER_CODE" && contains "$TMP/own-confirm.html" "Order received" && contains "$TMP/own-confirm.html" "Http Patient Customer"; then
+    pass "owner session still renders the full confirmation"
+else
+    fail "owner session still renders the full confirmation" "status $OWN_CONFIRM_CODE"
+fi
+
+# (b) Without the ordering session the order is never revealed: 303 redirect
+# to the code-knowledge gated tracker and no customer data in the body.
+NO_SESSION_STATUS=$(curl -sS -o "$TMP/no-session-body.html" -D "$TMP/no-session-headers.txt" -w '%{http_code}|%{redirect_url}' "$BASE/checkout.php?order=$GOOD_ORDER_CODE")
+case "$NO_SESSION_STATUS" in
+    303*track.php*) pass "confirmation without session redirects to track.php" ;;
+    *) fail "confirmation without session redirects to track.php" "$NO_SESSION_STATUS" ;;
+esac
+! grep -Fq "Http Patient Customer" "$TMP/no-session-body.html" && pass "sessionless confirmation leaks no customer data" || fail "sessionless confirmation leaks no customer data" "customer name found in body"
+
+# (c) Refresh behaviour: with the cookie jar the confirmation still renders.
+REFRESH_CODE=$(curl -sS -b "$JAR" -c "$JAR" -o "$TMP/refresh-confirm.html" -w '%{http_code}' "$BASE/checkout.php?order=$GOOD_ORDER_CODE")
+[ "$REFRESH_CODE" = "200" ] && contains "$TMP/refresh-confirm.html" "$GOOD_ORDER_CODE" && pass "confirmation refresh with session still works" || fail "confirmation refresh with session still works" "status $REFRESH_CODE"
+
+echo ""
+echo "GCash masking and idempotent replay landing"
+echo "-------------------------------------------"
+# A second checkout paid via GCash; the owner view must show only the masked
+# reference and a token replay must still land on the confirmation page.
+curl -sS -b "$JAR" -c "$JAR" -o "$TMP/checkout-gcash.html" "$BASE/checkout.php"
+GC_CSRF=$(extract_hidden csrf_token < "$TMP/checkout-gcash.html")
+GC_LOADED=$(extract_hidden form_loaded_at < "$TMP/checkout-gcash.html")
+GC_TOKEN=$(extract_hidden checkout_token < "$TMP/checkout-gcash.html")
+sleep 3.5
+GC_POST=$(curl -sS -b "$JAR" -c "$JAR" -o "$TMP/gcash-response.html" -D "$TMP/gcash-headers.txt" -w '%{http_code}' \
+    --data-urlencode "csrf_token=$GC_CSRF" \
+    --data-urlencode "checkout_token=$GC_TOKEN" \
+    --data-urlencode "form_loaded_at=$GC_LOADED" \
+    --data-urlencode "website=" \
+    --data-urlencode "items_json=[{\"id\":$PRODUCT_ID,\"qty\":1}]" \
+    --data-urlencode "customer_name=Http Gcash Customer" \
+    --data-urlencode "contact_number=0917 555 1234" \
+    --data-urlencode "delivery_address=88 Garden Street, Barangay Bloom, Quezon City" \
+    --data-urlencode "delivery_date=$DELIVERY_DATE" \
+    --data-urlencode "payment_method=GCash" \
+    --data-urlencode "gcash_ref=GC12345678" \
+    "$BASE/checkout.php")
+GC_ORDER_CODE=$(php -r '$h=file_get_contents($argv[1]); if(preg_match("/^Location:\\s*(.+)$/mi",$h,$m) && preg_match("/ZF-[A-HJ-NP-Z2-9]{12}/",$m[1],$c)) echo $c[0];' "$TMP/gcash-headers.txt")
+[ "$GC_POST" = "303" ] && [ -n "$GC_ORDER_CODE" ] && pass "GCash order is created and redirects to confirmation" || fail "GCash order is created and redirects to confirmation" "status $GC_POST code $GC_ORDER_CODE"
+
+GC_CONFIRM=$(curl -sS -b "$JAR" -c "$JAR" -o "$TMP/gcash-confirm.html" -w '%{http_code}' "$BASE/checkout.php?order=$GC_ORDER_CODE")
+if [ "$GC_CONFIRM" = "200" ] && contains "$TMP/gcash-confirm.html" 'GC••••••78'; then
+    pass "owner confirmation shows the masked GCash reference"
+else
+    fail "owner confirmation shows the masked GCash reference" "status $GC_CONFIRM"
+fi
+! grep -Fq "GC12345678" "$TMP/gcash-confirm.html" && pass "owner confirmation never shows the full GCash reference" || fail "owner confirmation never shows the full GCash reference" "full ref found"
+
+# Replay the same idempotency token: no second order, and the replayed
+# redirect must land on the confirmation page for the owning session.
+BEFORE_REPLAY=$(sqlite3 "$TMP/shop.db" "SELECT COUNT(*) FROM orders;")
+REPLAY=$(curl -sS -b "$JAR" -c "$JAR" -o /dev/null -D "$TMP/replay-headers.txt" -w '%{http_code}' \
+    --data-urlencode "csrf_token=$GC_CSRF" \
+    --data-urlencode "checkout_token=$GC_TOKEN" \
+    --data-urlencode "items_json=[{\"id\":$PRODUCT_ID,\"qty\":1}]" \
+    --data-urlencode "customer_name=Http Gcash Customer" \
+    --data-urlencode "contact_number=0917 555 1234" \
+    --data-urlencode "delivery_address=88 Garden Street, Barangay Bloom, Quezon City" \
+    --data-urlencode "delivery_date=$DELIVERY_DATE" \
+    --data-urlencode "payment_method=GCash" \
+    --data-urlencode "gcash_ref=GC12345678" \
+    "$BASE/checkout.php")
+AFTER_REPLAY=$(sqlite3 "$TMP/shop.db" "SELECT COUNT(*) FROM orders;")
+REPLAY_LOCATION=$(php -r '$h=file_get_contents($argv[1]); if(preg_match("/^Location:\\s*(.+)$/mi",$h,$m)) echo $m[1];' "$TMP/replay-headers.txt")
+if [ "$REPLAY" = "303" ] && [ "$BEFORE_REPLAY" = "$AFTER_REPLAY" ]; then
+    pass "replayed submission creates no second order"
+else
+    fail "replayed submission creates no second order" "status $REPLAY before $BEFORE_REPLAY after $AFTER_REPLAY"
+fi
+REPLAY_CODE=$(echo "$REPLAY_LOCATION" | grep -oE 'ZF-[A-HJ-NP-Z2-9]{12}' | head -1)
+REPLAY_CONFIRM=$(curl -sS -b "$JAR" -c "$JAR" -o "$TMP/replay-confirm.html" -w '%{http_code}' "$BASE/checkout.php?order=$REPLAY_CODE")
+[ "$REPLAY_CONFIRM" = "200" ] && contains "$TMP/replay-confirm.html" "Order received" && pass "replayed redirect still lands on the confirmation page" || fail "replayed redirect still lands on the confirmation page" "status $REPLAY_CONFIRM location '$REPLAY_LOCATION'"
+
+echo ""
+echo "Lookup rate limiting (must stay LAST — lockout is per-IP)"
+echo "---------------------------------------------------------"
+# (a) A legitimate successful lookup just before the block: no failure is
+# recorded for resolved lookups, so this must show the real order.
+PRE_CODE=$(curl -sS -o "$TMP/lock-valid.html" -w '%{http_code}' "$BASE/track.php?code=$ORDER_CODE")
+if [ "$PRE_CODE" = "200" ] && contains "$TMP/lock-valid.html" "$ORDER_CODE"; then
+    pass "valid lookup succeeds immediately before the block"
+else
+    fail "valid lookup succeeds immediately before the block" "status $PRE_CODE"
+fi
+
+# (b) Ten failed lookups cross the failure threshold (the earlier invalid
+# 'ZF-NOPE00' lookup is the first recorded failure of this window).
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    curl -sS -o /dev/null "$BASE/track.php?code=ZF-LOCK$i" || true
+done
+RECORDED=$(sqlite3 "$TMP/shop.db" "SELECT COUNT(*) FROM lookup_attempts;" 2>/dev/null)
+[ "${RECORDED:-0}" -ge 10 ] && pass "failed lookups were recorded (${RECORDED} rows)" || fail "failed lookups were recorded" "rows: $RECORDED"
+
+# (c) The 11th lookup — an invalid code — gets the generic not-found page.
+LOCKED_INVALID_CODE=$(curl -sS -o "$TMP/locked-invalid.html" -w '%{http_code}' "$BASE/track.php?code=ZF-LOCKEDX")
+[ "$LOCKED_INVALID_CODE" = "200" ] && contains "$TMP/locked-invalid.html" "No order found" && pass "blocked invalid lookup returns the generic not-found page" || fail "blocked invalid lookup returns the generic not-found page" "status $LOCKED_INVALID_CODE"
+
+# (d) The 12th lookup — the VALID order code — must get the exact same
+# generic page: no order details, no block wording, no customer name.
+LOCKED_VALID_CODE=$(curl -sS -o "$TMP/locked-valid.html" -w '%{http_code}' "$BASE/track.php?code=$ORDER_CODE")
+[ "$LOCKED_VALID_CODE" = "200" ] && contains "$TMP/locked-valid.html" "No order found" && pass "blocked valid lookup returns the generic not-found page" || fail "blocked valid lookup returns the generic not-found page" "status $LOCKED_VALID_CODE"
+! grep -Fq "Http Test Customer" "$TMP/locked-valid.html" && pass "blocked valid lookup leaks no customer data" || fail "blocked valid lookup leaks no customer data" "customer name found while locked"
+! grep -Eiq 'too many|rate limit|attempts' "$TMP/locked-valid.html" && pass "blocked valid lookup carries no block wording" || fail "blocked valid lookup carries no block wording"
+
+# (e) Locked valid and locked invalid responses are byte-for-byte the same
+# generic experience (same empty-state heading, no "too many attempts" text).
+if contains "$TMP/locked-valid.html" "No order found" && contains "$TMP/locked-invalid.html" "No order found" \
+   && ! grep -Eiq 'too many|rate limit|try again later|blocked' "$TMP/locked-valid.html" "$TMP/locked-invalid.html"; then
+    pass "locked responses are indistinguishable from a normal miss"
+else
+    fail "locked responses are indistinguishable from a normal miss"
+fi
 
 echo ""
 echo "${PASSED} passed, ${FAILED} failed."

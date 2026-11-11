@@ -20,10 +20,22 @@ $old = [
 $successOrder = null;
 $pageError = '';
 
-if (isset($_GET['order']) && $_GET['order'] !== '') {
-    $successOrder = zf_get_order_by_code($db, (string) $_GET['order']);
-    if ($successOrder === null) {
-        $pageError = 'We could not find that order reference. Please check the code and try again.';
+if (isset($_GET['order']) && is_string($_GET['order']) && $_GET['order'] !== '') {
+    zf_session_start();
+    $orderCode = strtoupper(trim($_GET['order']));
+    $placedCodes = $_SESSION['placed_order_codes'] ?? [];
+
+    if (is_array($placedCodes) && array_key_exists($orderCode, $placedCodes)) {
+        // Confirmation is strictly for the ordering session that placed it.
+        $successOrder = zf_get_order_by_code($db, $orderCode);
+        if ($successOrder === null) {
+            $pageError = 'We could not find that order reference. Please check the code and try again.';
+        }
+    } else {
+        // Never reveal an order to a visitor without the ordering session:
+        // send the code-knowledge gated, rate-limited tracker instead. No
+        // customer data is emitted on this path.
+        zf_redirect('/track.php?code=' . rawurlencode($orderCode));
     }
 }
 
@@ -103,8 +115,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if ($result['ok']) {
                 unset($_SESSION['checkout_token']);
-                $_SESSION['last_order_code'] = (string) $result['order']['order_code'];
-                zf_redirect('/checkout.php?order=' . rawurlencode((string) $result['order']['order_code']));
+                $orderCode = (string) $result['order']['order_code'];
+                $_SESSION['last_order_code'] = $orderCode;
+                // Bind the confirmation to this session. An array, because
+                // idempotent replays and repeat checkouts are legitimate.
+                $_SESSION['placed_order_codes'][$orderCode] = true;
+                zf_redirect('/checkout.php?order=' . rawurlencode($orderCode));
             }
 
             $errors = $result['errors'] ?? ['We could not place your order. Please try again.'];
@@ -167,7 +183,7 @@ require ZF_ROOT . '/src/views/store_header.php';
                         <h2>Delivery details</h2>
                         <dl class="detail-list">
                             <div><dt>Delivery date</dt><dd><?= zf_e(zf_format_date($successOrder['delivery_date'], 'l, M j, Y')) ?></dd></div>
-                            <div><dt>Payment</dt><dd><?= zf_e($successOrder['payment_method']) ?><?= $successOrder['payment_method'] === 'GCash' ? ' · ' . zf_e($successOrder['gcash_ref']) : '' ?></dd></div>
+                            <div><dt>Payment</dt><dd><?= zf_e($successOrder['payment_method']) ?><?= $successOrder['payment_method'] === 'GCash' ? ' · ' . zf_e(zf_mask_reference((string) $successOrder['gcash_ref'])) : '' ?></dd></div>
                             <div><dt>Status</dt><dd><span class="status <?= zf_e(zf_status_class($successOrder['status'])) ?>"><?= zf_e($successOrder['status']) ?></span></dd></div>
                             <?php if (trim((string) $successOrder['card_message']) !== ''): ?>
                                 <div><dt>Gift message</dt><dd>“<?= zf_e($successOrder['card_message']) ?>”</dd></div>

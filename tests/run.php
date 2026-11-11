@@ -126,7 +126,7 @@ check('valid COD order succeeds', $created['ok'] === true, implode('; ', $create
 
 if ($created['ok']) {
     $order = $created['order'];
-    check('order reference format is correct', preg_match('/^ZF-[A-Z0-9]{6}$/', $order['order_code']) === 1, $order['order_code']);
+    check('order reference format is correct', preg_match('/^ZF-[A-HJ-NP-Z2-9]{12}$/', $order['order_code']) === 1, $order['order_code']);
     check('server calculates the real total', abs((float) $order['total_amount'] - round((float) $product['price'] * 2, 2)) < 0.001);
     check('client price manipulation is ignored', (float) $order['total_amount'] !== 1.0);
     check('client product name manipulation is ignored', !str_contains($order['items_json'], 'Hacked name'));
@@ -283,6 +283,50 @@ check('mobile navigation overlays instead of pushing the hero', preg_match('/\.m
 check('menu script updates expanded state and label', str_contains($storeJs, "toggle.setAttribute('aria-expanded'") && str_contains($storeJs, "toggle.setAttribute('aria-label'"));
 check('menu script closes on escape and outside clicks', str_contains($storeJs, "event.key === 'Escape'") && str_contains($storeJs, 'closeMobileMenu(false)'));
 check('menu script locks background scrolling', str_contains($storeJs, "classList.toggle('menu-open'") && str_contains($storeCss, 'body.menu-open'));
+
+section('Order code generator');
+$generatedCodes = [];
+$formatOk = true;
+for ($i = 0; $i < 200; $i++) {
+    $code = zf_generate_order_code($db);
+    $generatedCodes[] = $code;
+    if (preg_match('/^ZF-[A-HJ-NP-Z2-9]{12}$/', $code) !== 1) {
+        $formatOk = false;
+    }
+}
+check('generated codes use the 12-character alphabet format', $formatOk, 'sample: ' . ($generatedCodes[0] ?? 'none'));
+check('generated codes are unique across 200 generations', count(array_unique($generatedCodes)) === 200, 'unique: ' . count(array_unique($generatedCodes)));
+check('generator produces different codes across calls', count(array_unique($generatedCodes)) > 1);
+
+section('Legacy order code compatibility');
+$legacyDate = date('Y-m-d', strtotime('+2 days'));
+$legacy = $db->prepare('
+    INSERT INTO orders (
+        order_code, customer_name, contact_number, delivery_address, delivery_date,
+        payment_method, gcash_ref, total_amount, items_json, status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+');
+$legacy->execute(['ZF-TEST01', 'Legacy Buyer', '0917 000 0000', '1 Old Code Road, Quezon City', $legacyDate, 'COD', '', 100.0, '[]', 'Pending']);
+check('legacy 6-character order code still resolves', zf_get_order_by_code($db, 'ZF-TEST01') !== null);
+
+section('Reference and name masking');
+check('reference masking keeps first two and last two characters', zf_mask_reference('GC12345678') === 'GC••••••78', zf_mask_reference('GC12345678'));
+check('short references are fully masked', zf_mask_reference('GC12') === '••••' && zf_mask_reference('12345') === '•••••');
+check('empty reference stays empty', zf_mask_reference('') === '');
+check('name masking keeps the first name and initialises the rest', zf_mask_name('Maria Santos') === 'Maria S.');
+check('single-word names are unchanged', zf_mask_name('Maria') === 'Maria');
+check('extra name parts each become initials', zf_mask_name('Anna Grace Reyes') === 'Anna G. R.');
+
+section('Lookup rate limiting');
+$rlIp = '192.0.2.77';
+check('an IP with zero recorded failures is not blocked', zf_track_lookup_blocked($db, $rlIp) === false);
+for ($i = 0; $i < ZF_LOOKUP_MAX_ATTEMPTS; $i++) {
+    zf_record_lookup_failure($db, $rlIp);
+}
+check('ten failed lookups trip the block', zf_track_lookup_blocked($db, $rlIp) === true);
+check("another IP is not blocked by someone else's failures", zf_track_lookup_blocked($db, '192.0.2.78') === false);
+$db->prepare('DELETE FROM lookup_attempts WHERE ip_address = ?')->execute([$rlIp]);
+check('cleared failures lift the block', zf_track_lookup_blocked($db, $rlIp) === false);
 
 section('Result');
 echo "\n{$passed} passed, {$failed} failed.\n";

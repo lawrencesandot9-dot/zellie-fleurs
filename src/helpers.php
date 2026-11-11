@@ -340,3 +340,53 @@ function zf_upload_error_message(int $code): string
         default => 'The image could not be uploaded. Please try another file.',
     };
 }
+
+/**
+ * Mask a payment reference for display: keep at most the first two and last
+ * two characters and replace the middle with bullets. References shorter
+ * than six characters are fully masked so no usable fragment survives.
+ */
+function zf_mask_reference(string $ref): string
+{
+    $ref = trim($ref);
+    $length = mb_strlen($ref);
+
+    if ($length === 0) {
+        return '';
+    }
+
+    if ($length < 6) {
+        return str_repeat('•', $length);
+    }
+
+    return mb_substr($ref, 0, 2) . str_repeat('•', $length - 4) . mb_substr($ref, -2);
+}
+
+/**
+ * Minimise a customer name for public tracking: first name in full,
+ * subsequent parts reduced to initials ('Maria Santos' → 'Maria S.').
+ * Single-word names are returned unchanged.
+ */
+function zf_mask_name(string $name): string
+{
+    $name = trim((string) preg_replace('/\s+/u', ' ', $name));
+    if ($name === '') {
+        return '';
+    }
+
+    $parts = explode(' ', $name);
+    if (count($parts) === 1) {
+        return $parts[0];
+    }
+
+    $first = array_shift($parts);
+    $initials = '';
+    foreach ($parts as $part) {
+        if ($part === '') {
+            continue;
+        }
+        $initials .= ' ' . mb_substr($part, 0, 1) . '.';
+    }
+
+    return $first . $initials;
+}

@@ -5,15 +5,19 @@ declare(strict_types=1);
  * Order creation, validation, status changes, tracking and reporting.
  */
 
+// 12 alphabet characters × 5 bits = 60 bits of entropy (~1e18 combinations).
+const ZF_ORDER_CODE_CHARS = 12;
+
 function zf_generate_order_code(PDO $db): string
 {
     $alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    $max = strlen($alphabet) - 1;
 
     for ($attempt = 0; $attempt < 10; $attempt++) {
+        // random_bytes(16) mapped with & 0x1F is unbiased because 256 % 32 == 0.
+        $bytes = random_bytes(16);
         $code = 'ZF-';
-        for ($i = 0; $i < 6; $i++) {
-            $code .= $alphabet[random_int(0, $max)];
+        for ($i = 0; $i < ZF_ORDER_CODE_CHARS; $i++) {
+            $code .= $alphabet[ord($bytes[$i]) & 0x1F];
         }
 
         $stmt = $db->prepare('SELECT COUNT(*) FROM orders WHERE order_code = ?');
@@ -23,7 +27,14 @@ function zf_generate_order_code(PDO $db): string
         }
     }
 
-    return 'ZF-' . strtoupper(bin2hex(random_bytes(4)));
+    // Astronomically unlikely fallback (ten consecutive collisions in a
+    // 60-bit space); keep the same 'ZF-' + 12-char alphabet shape.
+    $code = 'ZF-';
+    for ($i = 0; $i < ZF_ORDER_CODE_CHARS; $i++) {
+        $code .= $alphabet[random_int(0, strlen($alphabet) - 1)];
+    }
+
+    return $code;
 }
 
 function zf_normalize_order_items(mixed $rawItems, array &$errors): array
@@ -435,4 +446,44 @@ function zf_search_orders(PDO $db, string $search = '', string $status = '', str
     $stmt->execute($params);
 
     return $stmt->fetchAll();
+}
+
+/**
+ * Anonymous order-lookup throttling (mirrors the login_attempts pattern in
+ * src/auth.php). Only failed lookups are recorded, so a legitimate customer
+ * who knows their reference can never lock themselves out by tracking it.
+ */
+const ZF_LOOKUP_MAX_ATTEMPTS = 10;
+const ZF_LOOKUP_WINDOW_MINUTES = 15;
+
+function zf_track_lookup_blocked(PDO $db, string $ip): bool
+{
+    try {
+        // Opportunistic self-cleaning, same shape as auth.php login throttling.
+        $db->exec("DELETE FROM lookup_attempts WHERE attempted_at < datetime('now', 'localtime', '-1 day')");
+
+        $stmt = $db->prepare("
+            SELECT COUNT(*) FROM lookup_attempts
+            WHERE ip_address = ?
+              AND attempted_at >= datetime('now', 'localtime', ?)
+        ");
+        $stmt->execute([$ip, '-' . ZF_LOOKUP_WINDOW_MINUTES . ' minutes']);
+
+        return (int) $stmt->fetchColumn() >= ZF_LOOKUP_MAX_ATTEMPTS;
+    } catch (Throwable $e) {
+        // Fail open: a throttling infrastructure problem must never take the
+        // tracking page down.
+        error_log('[Zellie Fleurs] Lookup throttle check failed: ' . $e->getMessage());
+        return false;
+    }
+}
+
+function zf_record_lookup_failure(PDO $db, string $ip): void
+{
+    try {
+        $stmt = $db->prepare('INSERT INTO lookup_attempts (ip_address) VALUES (?)');
+        $stmt->execute([$ip]);
+    } catch (Throwable $e) {
+        error_log('[Zellie Fleurs] Lookup failure could not be recorded: ' . $e->getMessage());
+    }
 }

@@ -5,13 +5,26 @@ require_once __DIR__ . '/../config/database.php';
 require_once ZF_ROOT . '/src/orders.php';
 
 $settings = zf_settings();
-$searchedCode = strtoupper(zf_safe_text($_GET['code'] ?? ''));
+$searchedCode = strtoupper(zf_safe_text(is_string($_GET['code'] ?? null) ? $_GET['code'] : ''));
 $order = null;
 $notFound = false;
 
 if ($searchedCode !== '') {
-    $order = zf_get_order_by_code($db, $searchedCode);
-    $notFound = $order === null;
+    $ip = zf_client_ip();
+
+    if (zf_track_lookup_blocked($db, $ip)) {
+        // Locked out: return the exact same generic "no order found" response
+        // whether the code is valid or not, so neither the existence of an
+        // order nor the fact of a block is ever disclosed.
+        $notFound = true;
+    } else {
+        $order = zf_get_order_by_code($db, $searchedCode);
+        $notFound = $order === null;
+
+        if ($notFound) {
+            zf_record_lookup_failure($db, $ip);
+        }
+    }
 }
 
 $steps = zf_tracking_steps();
@@ -44,7 +57,7 @@ require ZF_ROOT . '/src/views/store_header.php';
         <form class="track-search panel" action="/track.php" method="get">
             <label for="track-code">Order reference</label>
             <div class="track-search__row">
-                <input id="track-code" type="text" name="code" value="<?= zf_e($searchedCode) ?>" placeholder="e.g. ZF-A1B2C3" autocomplete="off" required maxlength="20">
+                <input id="track-code" type="text" name="code" value="<?= zf_e($searchedCode) ?>" placeholder="e.g. ZF-A1B2C3D4E5F6" autocomplete="off" required maxlength="20">
                 <button class="btn btn--primary" type="submit">Track order</button>
             </div>
             <p class="track-search__hint">Your reference starts with <strong>ZF-</strong> and was shown after checkout.</p>
@@ -66,7 +79,7 @@ require ZF_ROOT . '/src/views/store_header.php';
                             <h2 class="track-code"><?= zf_e($order['order_code']) ?></h2>
                             <button class="copy-code" type="button" data-copy-code="<?= zf_e($order['order_code']) ?>" aria-label="Copy order reference to clipboard">Copy</button>
                         </div>
-                        <p class="muted">Placed <?= zf_e(zf_format_datetime($order['created_at'])) ?> by <?= zf_e($order['customer_name']) ?></p>
+                        <p class="muted">Placed <?= zf_e(zf_format_datetime($order['created_at'])) ?> by <?= zf_e(zf_mask_name((string) $order['customer_name'])) ?></p>
                     </div>
                     <span class="status status--large <?= zf_e(zf_status_class($order['status'])) ?>"><?= zf_e($order['status']) ?></span>
                 </div>
@@ -110,7 +123,7 @@ require ZF_ROOT . '/src/views/store_header.php';
                     <div class="panel panel--muted">
                         <h3>Delivery details</h3>
                         <dl class="detail-list">
-                            <div><dt>Customer</dt><dd><?= zf_e($order['customer_name']) ?></dd></div>
+                            <div><dt>Customer</dt><dd><?= zf_e(zf_mask_name((string) $order['customer_name'])) ?></dd></div>
                             <div><dt>Delivery date</dt><dd><?= zf_e(zf_format_date($order['delivery_date'], 'l, M j, Y')) ?></dd></div>
                             <div><dt>Payment method</dt><dd><?= zf_e($order['payment_method']) ?></dd></div>
                             <div><dt>Order status</dt><dd><?= zf_e($order['status']) ?></dd></div>
