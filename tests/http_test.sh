@@ -62,7 +62,7 @@ contains "$TMP/index.html" "Add to cart" && pass "add-to-cart buttons render" ||
 contains "$TMP/index.html" "assets/img/products/blush-roses.jpg" && pass "local product photography is used" || fail "local product photography is used"
 contains "$TMP/index.html" 'aria-controls="mobile-menu"' && pass "mobile menu trigger is wired for accessibility" || fail "mobile menu trigger is wired for accessibility"
 grep -Eq '<nav[^>]*id="mobile-menu"[^>]*hidden' "$TMP/index.html" && pass "mobile navigation is hidden by default" || fail "mobile navigation is hidden by default"
-contains "$TMP/index.html" 'style.css?v=20261110-refresh' && pass "versioned stylesheet is served" || fail "versioned stylesheet is served"
+contains "$TMP/index.html" 'style.css?v=20261111-admin' && pass "versioned stylesheet is served" || fail "versioned stylesheet is served"
 
 curl -sS -o "$TMP/products.json" "$BASE/api/products.php"
 PRODUCT_ID=$(php -r '$d=json_decode(file_get_contents($argv[1]),true); echo $d["products"][0]["id"] ?? "";' "$TMP/products.json")
@@ -103,6 +103,11 @@ LOGIN=$(curl -sS -b "$JAR" -c "$JAR" -o "$TMP/login-response.html" -D "$TMP/logi
 
 DASH=$(curl -sS -b "$JAR" -c "$JAR" -o "$TMP/dashboard.html" -w '%{http_code}' "$BASE/admin/index.php")
 [ "$DASH" = "200" ] && contains "$TMP/dashboard.html" "Total revenue" && pass "dashboard loads after login" || fail "dashboard loads after login" "status $DASH"
+
+# Quick actions, empty state, and studio note must render even with zero orders
+contains "$TMP/dashboard.html" "Keep the studio moving" && pass "quick actions render on empty dashboard" || fail "quick actions render on empty dashboard"
+contains "$TMP/dashboard.html" "No orders yet" && pass "empty state renders when there are no orders" || fail "empty state renders when there are no orders"
+contains "$TMP/dashboard.html" "Orders, handled with care" && pass "studio note renders on empty dashboard" || fail "studio note renders on empty dashboard"
 
 echo ""
 echo "Product management"
@@ -215,6 +220,13 @@ echo "Order management"
 echo "----------------"
 ORDER_ID=$(sqlite3 "$TMP/shop.db" "SELECT id FROM orders WHERE order_code = '$ORDER_CODE';")
 curl -sS -b "$JAR" -c "$JAR" -o "$TMP/admin-orders.html" "$BASE/admin/orders.php"
+
+# Delivery and Items columns render in the desktop orders table
+DELIVERY_RENDERED=$(date -d "$DELIVERY_DATE" '+%b %-d, %Y' 2>/dev/null || date -j -f '%Y-%m-%d' "$DELIVERY_DATE" '+%b %-d, %Y' 2>/dev/null)
+[ -n "$DELIVERY_RENDERED" ] && contains "$TMP/admin-orders.html" "$DELIVERY_RENDERED" && pass "orders listing shows the delivery date" || fail "orders listing shows the delivery date" "expected '$DELIVERY_RENDERED'"
+contains "$TMP/admin-orders.html" "2 × $PRODUCT_NAME" && pass "orders listing shows product name × qty" || fail "orders listing shows product name × qty"
+contains "$TMP/admin-orders.html" "<th scope=\"col\">Delivery</th>" && contains "$TMP/admin-orders.html" "<th scope=\"col\">Items</th>" && pass "orders table has Delivery and Items column headers" || fail "orders table has Delivery and Items column headers"
+
 CSRF=$(extract_hidden csrf_token < "$TMP/admin-orders.html")
 UPDATE=$(curl -sS -b "$JAR" -c "$JAR" -o /dev/null -w '%{http_code}' \
     --data-urlencode "csrf_token=$CSRF" \
@@ -570,8 +582,8 @@ grep -Eq 'style="[^"]*width' "$ROOT/public/product.php" "$ROOT/public/cart.php" 
     && fail "product.php and cart.php use no fixed-width inline styles" \
     || pass "product.php and cart.php use no fixed-width inline styles"
 
-ASSET_CSS=$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/assets/css/style.css?v=20261110-refresh")
-ASSET_JS=$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/assets/js/app.js?v=20261110-refresh")
+ASSET_CSS=$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/assets/css/style.css?v=20261111-admin")
+ASSET_JS=$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/assets/js/app.js?v=20261111-admin")
 [ "$ASSET_CSS" = "200" ] && pass "versioned stylesheet request returns 200" || fail "versioned stylesheet request returns 200" "got $ASSET_CSS"
 [ "$ASSET_JS" = "200" ] && pass "versioned script request returns 200" || fail "versioned script request returns 200" "got $ASSET_JS"
 

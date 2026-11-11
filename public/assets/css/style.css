@@ -1864,6 +1864,13 @@ p:last-child { margin-bottom: 0; }
 
 .admin-shell { display: grid; min-height: 100dvh; }
 
+/*
+   Sidebar: charcoal block below 980px (compact header with a horizontal,
+   scrollable nav row), sticky 248px column at 980px+. The sticky column
+   scrolls internally (overflow-y) so short viewports never hide the footer
+   links or overlap the content.
+*/
+
 .admin-sidebar {
     background: var(--ink);
     color: #d9d0c8;
@@ -1876,21 +1883,35 @@ p:last-child { margin-bottom: 0; }
 .brand--admin .brand__name { color: var(--white); font-size: 1.08rem; }
 .brand--admin .brand__tagline { color: #b8aca3; }
 
-.admin-nav { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.admin-nav {
+    display: flex;
+    gap: 0.4rem;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+}
+
+.admin-nav::-webkit-scrollbar { display: none; }
 
 .admin-nav a {
     display: flex;
     align-items: center;
     gap: 0.5rem;
+    flex: 0 0 auto;
     border-radius: 10px;
-    padding: 0.55rem 0.7rem;
-    font-size: 0.76rem;
+    padding: 0.68rem 0.95rem;
+    font-size: 0.78rem;
     font-weight: 600;
     color: #b8aca3;
+    white-space: nowrap;
 }
 
 .admin-nav a:hover { background: rgba(255, 255, 255, 0.07); color: var(--white); }
-.admin-nav a.is-active { background: var(--rose-deep); color: var(--white); }
+.admin-nav a.is-active {
+    background: var(--rose-deep);
+    color: var(--white);
+    box-shadow: inset 3px 0 0 var(--rose);
+}
 .admin-nav__icon { opacity: 0.8; font-size: 0.8rem; }
 
 .admin-sidebar__foot { display: flex; flex-wrap: wrap; align-items: center; gap: 0.8rem; }
@@ -1938,6 +1959,21 @@ p:last-child { margin-bottom: 0; }
 
 .admin-main { padding: 0.8rem 1rem 2.5rem; display: grid; gap: 1.2rem; }
 
+/*
+   Dashboard metric layout decisions (audit notes):
+   - Total revenue (.metric--wide) is a standalone full-width banner section:
+     stacked card on mobile, one row (label | value | hint) at 980px+.
+   - The seven status cards are equal size at every breakpoint:
+       < 560px  → 2 columns (2 / 2 / 2 / 1, last row left-aligned)
+       560–979px → 4 columns (4 / 3, last row left-aligned)
+       ≥ 980px  → 12-column grid, each card spans 3 columns
+                  (4 per row → rows of 4 + 3, last row left-aligned).
+     A repeat(4, 1fr)-equivalent; the 3-column gap in the final row is a
+     deliberate, consistent indent rather than accidental wrapping.
+   - Grid items stretch by default, so cards in the same row are equal
+     height without a fixed min-height.
+*/
+
 .metric-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.7rem; }
 
 .metric {
@@ -1947,10 +1983,17 @@ p:last-child { margin-bottom: 0; }
     padding: 0.9rem;
     display: grid;
     gap: 0.12rem;
+    align-content: start;
     min-width: 0;
 }
 
-.metric--wide { grid-column: span 2; background: var(--ink); color: var(--white); border-color: var(--ink); }
+.metric--wide {
+    background: var(--ink);
+    color: var(--white);
+    border-color: var(--ink);
+    padding: 1.1rem;
+}
+
 .metric--wide .metric__label, .metric--wide .metric__hint { color: #b8aca3; }
 .metric--wide .metric__value { color: var(--white); font-size: 1.9rem; }
 
@@ -1978,13 +2021,26 @@ p:last-child { margin-bottom: 0; }
 .admin-section__head .eyebrow { margin-bottom: 0.1rem; }
 .admin-section__head h2 { font-size: 1.5rem; }
 
+.admin-columns { display: grid; gap: 1rem; align-items: start; }
+
+.admin-quick-panel h2 { font-size: 1.3rem; }
+
 .recent-list { display: grid; gap: 0.5rem; }
 
+/*
+   Recent order rows: 2-col grid on mobile (code + status on top row,
+   customer + total below), strict columns at 980px+:
+   code | customer (+ date) | total (right-aligned) | status.
+*/
+
 .recent-order {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+        "code status"
+        "customer total";
     align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
+    gap: 0.15rem 1rem;
     background: var(--paper);
     border: 1px solid var(--line-soft);
     border-radius: var(--radius);
@@ -1993,12 +2049,14 @@ p:last-child { margin-bottom: 0; }
 
 .recent-order:hover { border-color: var(--rose); }
 
-.recent-order__main { display: grid; gap: 0.08rem; min-width: 0; }
+.recent-order .order-code { grid-area: code; }
+.recent-order__customer { grid-area: customer; display: grid; gap: 0.08rem; min-width: 0; }
+.recent-order__total { grid-area: total; justify-self: end; font-size: 0.82rem; }
+.recent-order .status { grid-area: status; justify-self: end; }
+
 .order-code { font-family: var(--mono, monospace); font-size: 0.76rem; font-weight: 700; letter-spacing: 0.05em; color: var(--rose-deep); }
 .recent-order__name { font-size: 0.8rem; font-weight: 600; overflow-wrap: anywhere; }
 .recent-order .muted { font-size: 0.66rem; }
-.recent-order__side { display: grid; justify-items: end; gap: 0.2rem; flex-shrink: 0; }
-.recent-order__side strong { font-size: 0.82rem; }
 
 .quick-actions { display: grid; gap: 0.35rem; margin-top: 0.7rem; }
 
@@ -2027,7 +2085,7 @@ p:last-child { margin-bottom: 0; }
     padding: 0.8rem;
 }
 
-.admin-filters .field { gap: 0; }
+.admin-filters .field { gap: 0.25rem; }
 .admin-filters input, .admin-filters select {
     width: 100%;
     border: 1px solid var(--line);
@@ -2040,51 +2098,72 @@ p:last-child { margin-bottom: 0; }
 
 .admin-filters input:focus, .admin-filters select:focus { border-color: var(--rose); }
 
-.admin-order-list { display: grid; gap: 0.8rem; }
+/* --- Quick status filter chips (plain links, existing badge colors) --- */
 
-.admin-order-card {
-    background: var(--paper);
-    border: 1px solid var(--line-soft);
-    border-radius: var(--radius);
-    padding: 0.9rem;
-    display: grid;
-    gap: 0.8rem;
+.status-chips { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+
+.status-chip {
+    font-size: 0.66rem;
+    padding: 0.42rem 0.85rem;
+    border: 1px solid transparent;
 }
 
-.admin-order-card__top { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap; }
-.admin-order-card__top .muted { font-size: 0.66rem; display: block; }
+.status-chip--all { background: var(--paper); border-color: var(--line); color: var(--muted); }
+.status-chip--all:hover { border-color: var(--rose); color: var(--rose-deep); }
+.status-chip:hover { filter: brightness(0.97); }
+.status-chip.is-active { box-shadow: inset 0 0 0 1.5px currentColor; }
 
-.admin-order-card__grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.65rem;
+/* --- Orders table ---
+   ≥760px: semantic table, fixed layout, no mid-token wraps for codes.
+   <760px: each row collapses into a card; thead hidden. Each td renders
+   as a two-column label/value row (fixed-width label column keeps all
+   labels aligned; minmax(0,1fr) lets long payment refs wrap safely
+   without horizontal overflow). Buttons/selects keep full size. */
+
+.orders-table-wrap { min-width: 0; }
+
+.orders-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
 }
 
-.admin-order-card__grid > div { display: grid; gap: 0.08rem; min-width: 0; }
-.admin-order-card__grid strong { font-size: 0.8rem; overflow-wrap: anywhere; }
-.admin-order-card__grid .muted { font-size: 0.66rem; overflow-wrap: anywhere; }
+.orders-table th,
+.orders-table td {
+    padding: 0.7rem 0.75rem;
+    text-align: left;
+    vertical-align: top;
+    overflow-wrap: anywhere;
+}
+
+.orders-table thead th {
+    font-size: 0.6rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    font-weight: 700;
+    color: var(--muted);
+    white-space: nowrap;
+    border-bottom: 1px solid var(--line);
+}
+
+.orders-table td strong { font-size: 0.8rem; }
+.orders-table td .muted { display: block; font-size: 0.68rem; }
+.orders-table .order-code { white-space: nowrap; }
 .order-total { color: var(--rose-deep); }
 
-.admin-order-card__items {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.3rem 0.8rem;
-    border-top: 1px solid var(--line-soft);
-    border-bottom: 1px solid var(--line-soft);
-    padding: 0.6rem 0;
-    font-size: 0.72rem;
-    color: var(--ink-soft);
-}
+/* Desktop columns (fixed layout): Order | Customer | Delivery | Items |
+   Total | Payment | Status | Actions. min-width keeps 8 columns usable
+   in the 760–900px band via the wrap's own scroll, never page overflow. */
+.orders-table th:nth-child(1), .orders-table td:nth-child(1) { width: 12%; }
+.orders-table th:nth-child(2), .orders-table td:nth-child(2) { width: 13%; }
+.orders-table th:nth-child(3), .orders-table td:nth-child(3) { width: 10%; }
+.orders-table th:nth-child(4), .orders-table td:nth-child(4) { width: 14%; }
+.orders-table th:nth-child(5), .orders-table td:nth-child(5) { width: 10%; }
+.orders-table th:nth-child(6), .orders-table td:nth-child(6) { width: 12%; }
+.orders-table th:nth-child(7), .orders-table td:nth-child(7) { width: 10%; }
+.orders-table th:nth-child(8), .orders-table td:nth-child(8) { width: 19%; }
 
-.admin-order-card__items strong { color: var(--rose-deep); }
-
-.admin-order-card__actions {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.5rem;
-    justify-content: space-between;
-}
+.orders-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
 
 .status-form { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
 .status-form select {
@@ -2094,6 +2173,88 @@ p:last-child { margin-bottom: 0; }
     font-size: 0.7rem;
     background: var(--white);
     max-width: 160px;
+    min-width: 0;
+}
+
+@media (min-width: 760px) {
+    /* 8 fixed columns need breathing room in the 760–900px band: the
+       wrap scrolls internally so page overflow stays impossible. */
+    .orders-table { min-width: 900px; }
+
+    .orders-table-wrap {
+        background: var(--paper);
+        border: 1px solid var(--line-soft);
+        border-radius: var(--radius);
+        overflow-x: auto;
+    }
+
+    .orders-table td[data-label="Status"],
+    .orders-table td[data-label="Actions"] { vertical-align: middle; }
+}
+
+@media (max-width: 759px) {
+    .orders-table { display: block; }
+    .orders-table thead { display: none; }
+    .orders-table tbody { display: block; }
+    .orders-table tbody tr {
+        display: grid;
+        gap: 0.45rem;
+        background: var(--paper);
+        border: 1px solid var(--line-soft);
+        border-radius: var(--radius);
+        padding: 0.7rem 0.8rem;
+    }
+    .orders-table tbody tr + tr { margin-top: 0.6rem; }
+
+    /* Two-column label/value rows: fixed label column keeps labels
+       aligned across the whole card; value column flexes and wraps.
+       Width must be reset here: the desktop table-layout:fixed rules
+       (.orders-table td:nth-child(N) { width: …% }) still apply to
+       grid containers and would shrink each cell to 12–24% of the
+       card, collapsing the value column to zero. Specificity of this
+       selector (0,2,2) beats td:nth-child(N) (0,2,1). */
+    .orders-table td {
+        display: grid;
+        grid-template-columns: 4.75rem minmax(0, 1fr);
+        column-gap: 0.55rem;
+        row-gap: 0.1rem;
+        align-items: baseline;
+        width: auto;
+        min-width: 0;
+        padding: 0;
+        border: 0;
+    }
+    .orders-table tbody td[data-label] { width: auto; }
+    .orders-table td[data-label]::before {
+        content: attr(data-label);
+        grid-column: 1;
+        font-size: 0.6rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        font-weight: 700;
+        color: var(--muted);
+        white-space: nowrap;
+    }
+    .orders-table td[data-label] > * {
+        grid-column: 2;
+        min-width: 0;
+    }
+
+    /* Money values must never break across lines; bounded by the
+       DEC total (small magnitudes) so nowrap cannot overflow. */
+    .orders-table td[data-label="Total"] strong { white-space: nowrap; }
+
+    /* Contact numbers are validated to ≤20 chars, so they always fit
+       the value column down to 320px — keep them on one line. */
+    .orders-table td[data-label="Customer"] .muted { white-space: nowrap; }
+
+    .orders-table td[data-label="Actions"] {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.4rem;
+    }
+    .orders-table td[data-label="Actions"]::before { flex-basis: 100%; }
 }
 
 .admin-detail-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; }
@@ -2333,11 +2494,9 @@ p:last-child { margin-bottom: 0; }
     .collection-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .collection-card:first-child { grid-column: span 2; }
     .field-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .metric-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-    .metric--wide { grid-column: span 3; }
+    .metric-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.8rem; }
     .footer-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .admin-filters { grid-template-columns: 1.6fr 1fr 1fr auto; align-items: end; }
-    .admin-order-card__grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .admin-filters { grid-template-columns: minmax(200px, 1.6fr) 1fr 1fr auto auto; align-items: end; }
     .track-grid { grid-template-columns: 1.2fr 0.8fr; }
 }
 
@@ -2378,7 +2537,7 @@ p:last-child { margin-bottom: 0; }
     .cart-page__layout { grid-template-columns: minmax(0, 1fr) minmax(240px, 0.55fr); max-width: 960px; }
     .cart-page__items .cart-item { grid-template-columns: 62px minmax(0, 1fr) auto; }
     .cart-page__items .cart-item__image { width: 62px; height: 76px; }
-    .admin-filters { grid-template-columns: minmax(220px, 1.6fr) 1fr 1fr auto; }
+    .admin-filters { grid-template-columns: minmax(220px, 1.6fr) 1fr 1fr auto auto; }
 }
 
 @media (min-width: 980px) {
@@ -2387,27 +2546,60 @@ p:last-child { margin-bottom: 0; }
         position: sticky;
         top: 0;
         height: 100dvh;
-        padding: 1.4rem 1rem;
+        padding: 1.5rem 1rem 1.2rem;
         align-content: space-between;
         gap: 1.4rem;
+        overflow-y: auto;
     }
-    .admin-nav { display: grid; gap: 0.3rem; }
-    .admin-nav a { padding: 0.65rem 0.75rem; }
+    .admin-nav { display: grid; gap: 0.4rem; }
+    .admin-nav a { padding: 0.7rem 0.85rem; }
     .admin-sidebar__foot { display: grid; gap: 0.6rem; }
+    /* Keep topbar and content aligned on very wide screens. */
+    .admin-workspace { width: 100%; max-width: 1400px; margin-inline: auto; }
     .admin-topbar { padding: 1.6rem 1.6rem 0.4rem; }
     .admin-main { padding: 0.8rem 1.6rem 3rem; gap: 1.5rem; }
-    .metric-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.9rem; }
-    .metric--wide { grid-column: span 2; }
+    /* 12-column status grid: each card spans 3 → rows of 4 + 3 (see base comment). */
+    .metric-grid { grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 0.9rem; }
+    .metric-grid .metric { grid-column: span 3; }
     .metric { padding: 1.1rem; }
     .metric__value { font-size: 1.8rem; }
-    .admin-section--split { grid-template-columns: 1.1fr 0.9fr; gap: 1rem; }
+    /* Revenue banner: label | large serif value | hint on one row. */
+    .metric--wide {
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 1.4rem;
+        padding: 1.3rem 1.6rem;
+    }
+    .metric--wide .metric__value { font-size: clamp(2.1rem, 3.2vw, 2.9rem); }
+    /* Recent order rows: code | customer | total | status columns.
+       The two-column dashboard (recent orders beside quick actions) waits
+       until 1120px so the fixed code/total/status tracks never overflow the
+       narrower 980–1119px workspace. */
+    .recent-order {
+        grid-template-areas: none;
+        grid-template-columns: 112px minmax(0, 1fr) 128px 152px;
+        gap: 1rem;
+        padding: 0.9rem 1.1rem;
+    }
+    .recent-order > .order-code,
+    .recent-order > .recent-order__customer,
+    .recent-order > .recent-order__total,
+    .recent-order > .status { grid-area: auto; }
+    .recent-order .status { justify-self: start; }
+    .recent-order__total { font-size: 0.86rem; }
     .admin-detail-grid { grid-template-columns: minmax(0, 1.6fr) minmax(260px, 0.7fr); gap: 1.2rem; }
     .admin-products-layout { grid-template-columns: minmax(320px, 0.8fr) minmax(0, 1.2fr); gap: 1.2rem; }
     .admin-settings-grid { grid-template-columns: minmax(0, 1.25fr) minmax(300px, 0.75fr); gap: 1.2rem; }
     .admin-product { grid-template-columns: 74px 1fr; }
     .admin-product > img { width: 74px; height: 88px; }
     .admin-product__actions { grid-column: 2; border-top: 0; padding-top: 0; justify-content: flex-end; }
-    .recent-order { padding: 0.9rem 1.1rem; }
+}
+
+/* Two-column dashboard: recent orders (wide) beside quick actions (~300px).
+   112px + 128px + 152px tracks plus gaps need ~440px, so side-by-side only
+   makes sense from 1120px; below that .admin-columns stays stacked. */
+@media (min-width: 1120px) {
+    .admin-columns { grid-template-columns: minmax(0, 1fr) 300px; gap: 1.2rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {

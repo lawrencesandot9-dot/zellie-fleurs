@@ -14,8 +14,8 @@ $admin = zf_current_admin();
     <meta name="theme-color" content="#2e2a28">
     <title><?= zf_e($pageTitle) ?> | <?= zf_e($settings['shop_name']) ?> Studio</title>
     <link rel="icon" href="/assets/img/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/assets/css/style.css?v=20261106-mobile">
-    <script defer src="/assets/js/app.js?v=20261106-mobile"></script>
+    <link rel="stylesheet" href="/assets/css/style.css?v=20261111-admin">
+    <script defer src="/assets/js/app.js?v=20261111-admin"></script>
 </head>
 <body class="admin-body">
 <a class="skip-link" href="#admin-main">Skip to content</a>

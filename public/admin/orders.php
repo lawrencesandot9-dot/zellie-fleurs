@@ -27,6 +27,20 @@ $status = zf_safe_text($_GET['status'] ?? '');
 $sort = ($_GET['sort'] ?? 'newest') === 'oldest' ? 'oldest' : 'newest';
 $orders = zf_search_orders($db, $search, $status, $sort);
 
+/**
+ * Build a chip/filter link that preserves the current search term and sort,
+ * swapping only the status (empty string = all statuses).
+ */
+$chip_href = static function (string $statusValue) use ($search, $sort): string {
+    $params = array_filter(
+        ['q' => $search, 'status' => $statusValue, 'sort' => $sort === 'oldest' ? 'oldest' : ''],
+        static fn (string $value): bool => $value !== '',
+    );
+    $query = http_build_query($params);
+
+    return '/admin/orders.php' . ($query !== '' ? '?' . $query : '');
+};
+
 $pageTitle = 'Orders';
 $activeAdmin = 'orders';
 require ZF_ROOT . '/src/views/admin_header.php';
@@ -35,11 +49,11 @@ require ZF_ROOT . '/src/views/admin_header.php';
 <section class="admin-section">
     <form class="admin-filters" method="get" action="/admin/orders.php">
         <div class="field field--search">
-            <label class="sr-only" for="order-search">Search orders</label>
-            <input id="order-search" type="search" name="q" value="<?= zf_e($search) ?>" placeholder="Search code, customer or number…">
+            <label class="label" for="order-search">Search</label>
+            <input id="order-search" type="search" name="q" value="<?= zf_e($search) ?>" placeholder="Code, customer or number…">
         </div>
         <div class="field">
-            <label class="sr-only" for="order-status">Filter status</label>
+            <label class="label" for="order-status">Status</label>
             <select id="order-status" name="status">
                 <option value="">All statuses</option>
                 <?php foreach (zf_order_statuses() as $option): ?>
@@ -48,7 +62,7 @@ require ZF_ROOT . '/src/views/admin_header.php';
             </select>
         </div>
         <div class="field">
-            <label class="sr-only" for="order-sort">Sort</label>
+            <label class="label" for="order-sort">Sort</label>
             <select id="order-sort" name="sort">
                 <option value="newest" <?= $sort === 'newest' ? 'selected' : '' ?>>Newest first</option>
                 <option value="oldest" <?= $sort === 'oldest' ? 'selected' : '' ?>>Oldest first</option>
@@ -69,6 +83,13 @@ require ZF_ROOT . '/src/views/admin_header.php';
         </div>
     </div>
 
+    <nav class="status-chips" aria-label="Quick status filters">
+        <a class="status status-chip status-chip--all <?= $status === '' ? 'is-active' : '' ?>" href="<?= zf_e($chip_href('')) ?>">All</a>
+        <?php foreach (zf_order_statuses() as $option): ?>
+            <a class="status <?= zf_e(zf_status_class($option)) ?> status-chip <?= $status === $option ? 'is-active' : '' ?>" href="<?= zf_e($chip_href($option)) ?>"><?= zf_e($option) ?></a>
+        <?php endforeach; ?>
+    </nav>
+
     <?php if ($orders === []): ?>
         <div class="empty-state empty-state--wide">
             <img src="/assets/img/logo-mark.svg" alt="" width="48" height="48">
@@ -77,63 +98,70 @@ require ZF_ROOT . '/src/views/admin_header.php';
             <a class="btn btn--soft" href="/admin/orders.php">Show all orders</a>
         </div>
     <?php else: ?>
-        <div class="admin-order-list">
-            <?php foreach ($orders as $order): $items = zf_order_items($order); ?>
-                <article class="admin-order-card">
-                    <div class="admin-order-card__top">
-                        <div>
-                            <span class="order-code"><?= zf_e($order['order_code']) ?></span>
-                            <span class="muted"><?= zf_e(zf_format_datetime($order['created_at'])) ?></span>
-                        </div>
-                        <span class="status <?= zf_e(zf_status_class($order['status'])) ?>"><?= zf_e($order['status']) ?></span>
-                    </div>
-
-                    <div class="admin-order-card__grid">
-                        <div>
-                            <span class="label">Customer</span>
-                            <strong><?= zf_e($order['customer_name']) ?></strong>
-                            <span class="muted"><?= zf_e($order['contact_number']) ?></span>
-                        </div>
-                        <div>
-                            <span class="label">Delivery</span>
-                            <strong><?= zf_e(zf_format_date($order['delivery_date'], 'M j, Y')) ?></strong>
-                            <span class="muted">Scheduled date</span>
-                        </div>
-                        <div>
-                            <span class="label">Payment</span>
-                            <strong><?= zf_e($order['payment_method']) ?></strong>
-                            <span class="muted"><?= $order['payment_method'] === 'GCash' ? 'Ref: ' . zf_e($order['gcash_ref']) : 'Pay on delivery' ?></span>
-                        </div>
-                        <div>
-                            <span class="label">Total</span>
-                            <strong class="order-total"><?= zf_money($order['total_amount']) ?></strong>
-                            <span class="muted"><?= count($items) ?> <?= count($items) === 1 ? 'item' : 'items' ?></span>
-                        </div>
-                    </div>
-
-                    <div class="admin-order-card__items">
-                        <?php foreach ($items as $item): ?>
-                            <span><strong><?= (int) $item['qty'] ?>×</strong> <?= zf_e($item['name']) ?></span>
-                        <?php endforeach; ?>
-                    </div>
-
-                    <div class="admin-order-card__actions">
-                        <a class="btn btn--ghost btn--small" href="/admin/view_order.php?id=<?= (int) $order['id'] ?>">View details</a>
-                        <form class="status-form" method="post" action="/admin/orders.php" data-status-form>
-                            <?= zf_csrf_field() ?>
-                            <input type="hidden" name="update_status" value="1">
-                            <input type="hidden" name="order_id" value="<?= (int) $order['id'] ?>">
-                            <label class="sr-only" for="status-<?= (int) $order['id'] ?>">Update status</label>
-                            <select id="status-<?= (int) $order['id'] ?>" name="status" data-prev="<?= zf_e($order['status']) ?>">
-                                <?php foreach (zf_order_statuses() as $option): ?>
-                                    <option value="<?= zf_e($option) ?>" <?= $order['status'] === $option ? 'selected' : '' ?>><?= zf_e($option) ?></option>
+        <div class="orders-table-wrap">
+            <table class="orders-table">
+                <thead>
+                    <tr>
+                        <th scope="col">Order</th>
+                        <th scope="col">Customer</th>
+                        <th scope="col">Delivery</th>
+                        <th scope="col">Items</th>
+                        <th scope="col">Total</th>
+                        <th scope="col">Payment</th>
+                        <th scope="col">Status</th>
+                        <th scope="col">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($orders as $order): $items = zf_order_items($order); ?>
+                        <tr>
+                            <td data-label="Order">
+                                <span class="order-code"><?= zf_e($order['order_code']) ?></span>
+                                <span class="muted"><?= zf_e(zf_format_datetime($order['created_at'])) ?></span>
+                            </td>
+                            <td data-label="Customer">
+                                <strong><?= zf_e($order['customer_name']) ?></strong>
+                                <span class="muted"><?= zf_e($order['contact_number']) ?></span>
+                            </td>
+                            <td data-label="Delivery">
+                                <strong><?= zf_e(zf_format_date($order['delivery_date'])) ?></strong>
+                            </td>
+                            <td data-label="Items">
+                                <?php foreach ($items as $item): ?>
+                                    <span class="muted"><?= (int) $item['qty'] ?> × <?= zf_e($item['name']) ?></span>
                                 <?php endforeach; ?>
-                            </select>
-                            <button class="btn btn--soft btn--small" type="submit">Update</button>
-                        </form>
-                    </div>
-                </article>
-            <?php endforeach; ?>
+                            </td>
+                            <td data-label="Total">
+                                <strong class="order-total"><?= zf_money($order['total_amount']) ?></strong>
+                            </td>
+                            <td data-label="Payment">
+                                <strong><?= zf_e($order['payment_method']) ?></strong>
+                                <span class="muted"><?= $order['payment_method'] === 'GCash' ? 'Ref: ' . zf_e($order['gcash_ref']) : 'Pay on delivery' ?></span>
+                            </td>
+                            <td data-label="Status">
+                                <span class="status <?= zf_e(zf_status_class($order['status'])) ?>"><?= zf_e($order['status']) ?></span>
+                            </td>
+                            <td data-label="Actions">
+                                <div class="orders-actions">
+                                    <a class="btn btn--ghost btn--small" href="/admin/view_order.php?id=<?= (int) $order['id'] ?>">View details</a>
+                                    <form class="status-form" method="post" action="/admin/orders.php" data-status-form>
+                                        <?= zf_csrf_field() ?>
+                                        <input type="hidden" name="update_status" value="1">
+                                        <input type="hidden" name="order_id" value="<?= (int) $order['id'] ?>">
+                                        <label class="sr-only" for="status-<?= (int) $order['id'] ?>">Update status for <?= zf_e($order['order_code']) ?></label>
+                                        <select id="status-<?= (int) $order['id'] ?>" name="status" data-prev="<?= zf_e($order['status']) ?>">
+                                            <?php foreach (zf_order_statuses() as $option): ?>
+                                                <option value="<?= zf_e($option) ?>" <?= $order['status'] === $option ? 'selected' : '' ?>><?= zf_e($option) ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                        <button class="btn btn--soft btn--small" type="submit">Update</button>
+                                    </form>
+                                </div>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
         </div>
     <?php endif; ?>
 </section>
