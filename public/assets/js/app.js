@@ -72,7 +72,8 @@
         });
     }
 
-    function loadProducts() {
+    function loadProducts(force) {
+        if (force) productsPromise = null;
         if (productsPromise) return productsPromise;
 
         productsPromise = fetch('/api/products.php', {
@@ -123,7 +124,7 @@
         }
     }
 
-    function addToCart(id) {
+    function addToCart(id, qty = 1) {
         const product = productMap.get(Number(id));
         if (!product) {
             toast('That arrangement is no longer available.', 'error');
@@ -134,17 +135,23 @@
             return;
         }
 
+        const stock = Number(product.stock_quantity);
+        const wanted = Number.isInteger(qty) && qty > 0 ? qty : 1;
         const existing = cart.find((item) => item.id === product.id);
         const currentQty = existing ? existing.qty : 0;
-        if (currentQty >= Number(product.stock_quantity)) {
+        if (currentQty >= stock) {
             toast('Only ' + product.stock_quantity + ' available for this arrangement.', 'error');
             return;
         }
 
+        const addQty = Math.min(wanted, stock - currentQty, MAX_QTY);
+        if (addQty < wanted) {
+            toast('Only ' + product.stock_quantity + ' available — added those.', 'error');
+        }
         if (existing) {
-            existing.qty += 1;
+            existing.qty = Math.min(existing.qty + addQty, stock, MAX_QTY);
         } else {
-            cart.push({ id: product.id, qty: 1 });
+            cart.push({ id: product.id, qty: addQty });
         }
 
         writeCart();
@@ -178,6 +185,16 @@
         renderCart();
     }
 
+    function productsUnavailableMarkup() {
+        return `
+            <div class="empty-state">
+                <img src="/assets/img/logo-mark.svg" alt="" width="48" height="48">
+                <h3>We could not load the shop</h3>
+                <p>Your selection is still saved, but checkout needs a quick reload. Try again.</p>
+                <button class="btn btn--soft" type="button" data-cart-retry>Retry</button>
+            </div>`;
+    }
+
     function emptyCartMarkup() {
         return `
             <div class="empty-state">
@@ -188,28 +205,40 @@
             </div>`;
     }
 
-    function renderCart() {
-        const container = document.querySelector('[data-cart-items]');
+    function emptyCartPageMarkup() {
+        return `
+            <div class="empty-state">
+                <img src="/assets/img/logo-mark.svg" alt="" width="48" height="48">
+                <h3>Your cart is empty</h3>
+                <p>Add a bouquet or keepsake box to begin your order.</p>
+                <a class="btn btn--soft" href="/index.php#shop">Browse the collection</a>
+            </div>`;
+    }
+
+    function setCheckoutDisabled(checkoutLink, disabled) {
+        if (!checkoutLink) return;
+        checkoutLink.classList.toggle('is-disabled', disabled);
+        if (disabled) {
+            checkoutLink.setAttribute('aria-disabled', 'true');
+        } else {
+            checkoutLink.removeAttribute('aria-disabled');
+        }
+    }
+
+    function renderCartInto(container, subtotalEl, checkoutLink, emptyMarkup) {
         if (!container) return;
 
-        const checkoutLink = document.querySelector('[data-cart-checkout]');
-        const subtotalEl = document.querySelector('[data-cart-subtotal]');
-
         if (cart.length === 0) {
-            container.innerHTML = emptyCartMarkup();
+            container.innerHTML = emptyMarkup;
             if (subtotalEl) subtotalEl.textContent = money(0);
-            if (checkoutLink) {
-                checkoutLink.classList.add('is-disabled');
-                checkoutLink.setAttribute('aria-disabled', 'true');
-            }
+            setCheckoutDisabled(checkoutLink, true);
             return;
         }
 
         const rows = cart.map((item) => {
             const product = productMap.get(item.id);
             if (!product) return '';
-            const lineTotal = Number(product.price) * item.qty;
-            return `
+            const lineTotal = Number(product.price) * item.qty;            return `
                 <div class="cart-item">
                     <img class="cart-item__image" src="${escapeHtml(product.image_url)}" alt="" width="62" height="76" loading="lazy" onerror="this.onerror=null;this.src='/assets/img/flower-placeholder.svg';">
                     <div class="cart-item__info">
@@ -226,13 +255,33 @@
                 </div>`;
         }).join('');
 
-        container.innerHTML = rows || emptyCartMarkup();
+        const itemsLoaded = productMap.size > 0;
+        if (rows === '') {
+            container.innerHTML = itemsLoaded ? emptyMarkup : productsUnavailableMarkup();
+            if (subtotalEl) subtotalEl.textContent = itemsLoaded ? money(0) : subtotalEl.textContent;
+            setCheckoutDisabled(checkoutLink, true);
+            return;
+        }
+
+        container.innerHTML = rows;
 
         if (subtotalEl) subtotalEl.textContent = money(subtotal());
-        if (checkoutLink) {
-            checkoutLink.classList.remove('is-disabled');
-            checkoutLink.removeAttribute('aria-disabled');
-        }
+        setCheckoutDisabled(checkoutLink, !rows);
+    }
+
+    function renderCart() {
+        renderCartInto(
+            document.querySelector('[data-cart-items]'),
+            document.querySelector('[data-cart-subtotal]'),
+            document.querySelector('[data-cart-checkout]'),
+            emptyCartMarkup(),
+        );
+        renderCartInto(
+            document.querySelector('[data-cart-page-items]'),
+            document.querySelector('[data-cart-page-subtotal]'),
+            document.querySelector('[data-cart-page-link]'),
+            emptyCartPageMarkup(),
+        );
     }
 
     function getMobileMenu() {
@@ -337,6 +386,12 @@
             const remove = event.target.closest('[data-cart-remove]');
             if (remove) {
                 removeItem(remove.getAttribute('data-cart-remove'));
+                return;
+            }
+
+            const retry = event.target.closest('[data-cart-retry]');
+            if (retry) {
+                loadProducts(true).then(renderCart);
             }
         });
 
@@ -350,13 +405,75 @@
         document.querySelectorAll('[data-add-to-cart]').forEach((button) => {
             button.addEventListener('click', async () => {
                 await loadProducts();
-                addToCart(button.getAttribute('data-product-id'));
+
+                let qty = 1;
+                const qtyInput = button.parentElement
+                    ? button.parentElement.querySelector('[data-qty-input]')
+                    : null;
+                if (qtyInput) {
+                    const parsed = Math.floor(Number(qtyInput.value));
+                    if (Number.isFinite(parsed) && parsed > 0) qty = parsed;
+                }
+
+                addToCart(button.getAttribute('data-product-id'), qty);
             });
         });
 
         updateBadge();
         renderCart();
         loadProducts().then(renderCart);
+    }
+
+    function setupQtySteppers() {
+        document.querySelectorAll('.qty-stepper').forEach((stepper) => {
+            const input = stepper.querySelector('[data-qty-input]');
+            if (!input) return;
+
+            const maxQty = () => {
+                const declared = Number(stepper.getAttribute('data-max-qty')) || Number(input.max) || MAX_QTY;
+                return Math.max(1, Math.min(declared, MAX_QTY));
+            };
+
+            const clamp = () => {
+                let value = Math.floor(Number(input.value) || 1);
+                input.value = String(Math.max(1, Math.min(value, maxQty())));
+            };
+
+            const step = function (delta) {
+                let value = Math.floor(Number(input.value) || 1) + delta;
+                input.value = String(Math.max(1, Math.min(value, maxQty())));
+            };
+
+            input.addEventListener('change', clamp);
+            stepper.querySelectorAll('[data-qty-dec]').forEach((button) => {
+                button.addEventListener('click', () => {
+                    if (!button.disabled) step(-1);
+                });
+            });
+            stepper.querySelectorAll('[data-qty-inc]').forEach((button) => {
+                button.addEventListener('click', () => {
+                    if (!button.disabled) step(1);
+                });
+            });
+        });
+    }
+
+    function setupCopyCode() {
+        const button = document.querySelector('[data-copy-code]');
+        if (!button) return;
+
+        button.addEventListener('click', async () => {
+            const code = button.getAttribute('data-copy-code') || '';
+            try {
+                if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
+                    throw new Error('unavailable');
+                }
+                await navigator.clipboard.writeText(code);
+                toast('Order code copied', 'success');
+            } catch (error) {
+                toast('Copy not available', 'error');
+            }
+        });
     }
 
     function setupMenu() {
@@ -547,5 +664,7 @@
         setupCheckout();
         setupConfirmation();
         setupAdmin();
+        setupQtySteppers();
+        setupCopyCode();
     });
 })();
