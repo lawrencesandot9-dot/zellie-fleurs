@@ -38,6 +38,31 @@ ini_set('error_log', ZF_DATA . '/php-error.log');
 require_once ZF_ROOT . '/src/helpers.php';
 require_once ZF_ROOT . '/src/database.php';
 
+/**
+ * Baseline security headers for every request. Sent before any output and
+ * only when headers are still sendable (CLI neighbours and streamed
+ * responses are left untouched).
+ */
+if (!function_exists('zf_send_security_headers')) {
+    function zf_send_security_headers(): void
+    {
+        if (headers_sent()) {
+            return;
+        }
+
+        header('X-Content-Type-Options: nosniff');
+        header('X-Frame-Options: DENY');
+        header('Referrer-Policy: strict-origin-when-cross-origin');
+        header('Permissions-Policy: camera=(), microphone=(), geolocation=()');
+
+        // Report-Only (never enforced): the storefront views rely on inline
+        // attributes such as onerror handlers that an enforced CSP would break.
+        header("Content-Security-Policy-Report-Only: default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'");
+    }
+}
+
+zf_send_security_headers();
+
 try {
     $db = new PDO('sqlite:' . $zfDbPath, null, null, [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
