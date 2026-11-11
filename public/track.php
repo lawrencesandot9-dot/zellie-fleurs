@@ -62,7 +62,10 @@ require ZF_ROOT . '/src/views/store_header.php';
                 <div class="track-head panel">
                     <div>
                         <span class="eyebrow">Order reference</span>
-                        <h2 class="track-code"><?= zf_e($order['order_code']) ?></h2>
+                        <div class="track-code-row">
+                            <h2 class="track-code"><?= zf_e($order['order_code']) ?></h2>
+                            <button class="copy-code" type="button" data-copy-code="<?= zf_e($order['order_code']) ?>" aria-label="Copy order reference to clipboard">Copy</button>
+                        </div>
                         <p class="muted">Placed <?= zf_e(zf_format_datetime($order['created_at'])) ?> by <?= zf_e($order['customer_name']) ?></p>
                     </div>
                     <span class="status status--large <?= zf_e(zf_status_class($order['status'])) ?>"><?= zf_e($order['status']) ?></span>
@@ -118,7 +121,7 @@ require ZF_ROOT . '/src/views/store_header.php';
                     </div>
                 </div>
 
-                <p class="track-help">Need to change something? Contact the studio at <strong><?= zf_e($settings['contact_number']) ?></strong>.</p>
+                <p class="track-help">Need to change something? Contact the studio at <strong><?= zf_contact_link($settings['contact_number']) ?></strong>.</p>
             </section>
         <?php endif; ?>
     </div>

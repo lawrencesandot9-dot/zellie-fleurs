@@ -139,10 +139,12 @@ require ZF_ROOT . '/src/views/store_header.php';
                     ?>
                         <article class="product-card">
                             <div class="product-card__image">
-                                <img src="<?= zf_e(zf_image_url($product['image_url'])) ?>"
-                                     alt="<?= zf_e($product['name']) ?>"
-                                     loading="lazy"
-                                     onerror="this.onerror=null;this.src='/assets/img/flower-placeholder.svg';">
+                                <a class="product-card__link" href="/product.php?id=<?= (int) $product['id'] ?>" aria-label="View <?= zf_e($product['name']) ?> details">
+                                    <img src="<?= zf_e(zf_image_url($product['image_url'])) ?>"
+                                         alt="<?= zf_e($product['name']) ?>"
+                                         loading="lazy"
+                                         onerror="this.onerror=null;this.src='/assets/img/flower-placeholder.svg';">
+                                </a>
                                 <?php if (!$isAvailable): ?>
                                     <span class="product-badge product-badge--out">Sold out</span>
                                 <?php elseif ((int) $product['stock_quantity'] <= 3): ?>
@@ -153,7 +155,7 @@ require ZF_ROOT . '/src/views/store_header.php';
                             </div>
                             <div class="product-card__body">
                                 <span class="product-card__category"><?= zf_e($product['category']) ?></span>
-                                <h3><?= zf_e($product['name']) ?></h3>
+                                <h3><a class="product-card__name" href="/product.php?id=<?= (int) $product['id'] ?>"><?= zf_e($product['name']) ?></a></h3>
                                 <p><?= zf_e($product['description']) ?></p>
                                 <div class="product-card__foot">
                                     <div>
@@ -224,7 +226,7 @@ require ZF_ROOT . '/src/views/store_header.php';
                 <div class="contact-card">
                     <span class="contact-card__icon">☎</span>
                     <h3>Contact</h3>
-                    <p><?= zf_e($settings['contact_number']) ?></p>
+                    <p><?= zf_contact_link($settings['contact_number']) ?></p>
                     <p class="muted">For order changes and delivery questions.</p>
                 </div>
                 <div class="contact-card">

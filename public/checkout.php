@@ -42,6 +42,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errors[] = 'Your security token has expired. Please refresh the page and try again.';
     } else {
         zf_session_start();
+
+        // Bot guard (no-JS safe): the honeypot trips only when the hidden
+        // "website" field is filled, a path real customers cannot reach.
+        // The speed guard only fires when the posted form_loaded_at token is
+        // present AND matches the session entry captured at render time, so a
+        // missing cookie/token never blocks checkout.
+        $loadedAt = $_SESSION['checkout_loaded_at'] ?? null;
+        $loadedToken = (string) ($_POST['form_loaded_at'] ?? '');
+        $isBot = trim((string) ($_POST['website'] ?? '')) !== '';
+
+        if (
+            !$isBot
+            && is_array($loadedAt)
+            && is_string($loadedAt['token'] ?? null)
+            && is_int($loadedAt['at'] ?? null)
+            && ctype_xdigit($loadedAt['token'])
+            && $loadedToken !== ''
+            && hash_equals($loadedAt['token'], $loadedToken)
+            && (time() - $loadedAt['at']) < 2
+        ) {
+            $isBot = true;
+        }
+
+        // Single-use token: consumed on every validated submission so a
+        // replayed request cannot reuse the render timestamp.
+        unset($_SESSION['checkout_loaded_at']);
+
+        if ($isBot) {
+            $errors[] = 'We could not place your order. Please try again.';
+        }
+
         $postedToken = (string) ($_POST['checkout_token'] ?? '');
         $sessionToken = (string) ($_SESSION['checkout_token'] ?? '');
 
@@ -50,6 +81,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 zf_redirect('/checkout.php?order=' . rawurlencode((string) $_SESSION['last_order_code']));
             }
             $errors[] = 'Your checkout session has expired. Please review your cart and try again.';
+        } elseif ($isBot) {
+            // Honeypot or too-fast submit: the generic error is already set
+            // above. Fall through without creating any order.
         } else {
             $items = json_decode((string) ($_POST['items_json'] ?? '[]'), true);
             if (!is_array($items)) {
@@ -82,6 +116,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $today = date('Y-m-d');
 $maxDate = date('Y-m-d', strtotime('+180 days'));
 $checkoutToken = zf_checkout_token();
+
+// Speed guard, no-JS safe: a render token is stored with the time the
+// checkout form was served. The POST handler only enforces the 2-second
+// minimum when this token round-trips with the same session cookie, so
+// cookie-less or JS-less clients are never blocked.
+$loadedFormToken = bin2hex(random_bytes(8));
+zf_session_start();
+$_SESSION['checkout_loaded_at'] = ['token' => $loadedFormToken, 'at' => time()];
+
 $pageTitle = 'Checkout | ' . $settings['shop_name'];
 $activeNav = 'shop';
 require ZF_ROOT . '/src/views/store_header.php';
@@ -165,6 +208,8 @@ require ZF_ROOT . '/src/views/store_header.php';
                     <?= zf_csrf_field() ?>
                     <input type="hidden" name="checkout_token" value="<?= zf_e($checkoutToken) ?>">
                     <input type="hidden" name="items_json" value="[]" data-cart-json>
+                    <input type="hidden" name="form_loaded_at" value="<?= zf_e($loadedFormToken) ?>">
+                    <input type="text" name="website" value="" style="position:absolute;left:-9999px;top:-9999px;" aria-hidden="true" tabindex="-1" autocomplete="off">
 
                     <section class="form-section">
                         <div class="form-section__head">

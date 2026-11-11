@@ -309,6 +309,27 @@ function zf_tracking_steps(): array
     return ['Pending', 'Confirmed', 'Preparing', 'Out for Delivery', 'Delivered'];
 }
 
+/**
+ * Render a contact value for the storefront. When it looks like a phone
+ * number (seven or more digits once non-digits are stripped) it becomes a
+ * tappable tel: link; obvious "not yet set" placeholders get a friendlier
+ * line instead of raw settings text; anything else is escaped as-is.
+ */
+function zf_contact_link(string $value): string
+{
+    $digits = preg_replace('/[^0-9]/', '', $value) ?? '';
+
+    if (strlen($digits) >= 7) {
+        return '<a href="tel:' . zf_e($digits) . '">' . zf_e($value) . '</a>';
+    }
+
+    if (stripos($value, 'not yet set') !== false) {
+        return zf_e('No contact details published yet');
+    }
+
+    return zf_e($value);
+}
+
 function zf_upload_error_message(int $code): string
 {
     return match ($code) {

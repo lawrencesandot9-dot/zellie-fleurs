@@ -31,7 +31,7 @@ $settings = zf_settings();
             <ul class="footer-links footer-links--plain">
                 <li><?= zf_e($settings['store_address']) ?></li>
                 <li><?= zf_e($settings['operating_hours']) ?></li>
-                <li><?= zf_e($settings['contact_number']) ?></li>
+                <li><?= zf_contact_link($settings['contact_number']) ?></li>
             </ul>
         </div>
 
