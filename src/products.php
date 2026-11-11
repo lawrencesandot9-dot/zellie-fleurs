@@ -18,8 +18,8 @@ function zf_get_products(PDO $db, array $filters = []): array
         $sql .= ' AND is_active = 1';
     }
     if ($search !== '') {
-        $sql .= ' AND (name LIKE :s1 OR description LIKE :s2 OR category LIKE :s3)';
-        $term = '%' . $search . '%';
+        $sql .= " AND (name LIKE :s1 ESCAPE '\\' OR description LIKE :s2 ESCAPE '\\' OR category LIKE :s3 ESCAPE '\\')";
+        $term = zf_like_term($search);
         $params[':s1'] = $term;
         $params[':s2'] = $term;
         $params[':s3'] = $term;

@@ -48,6 +48,13 @@ function zf_normalize_order_items(mixed $rawItems, array &$errors): array
             continue;
         }
 
+        // Cap distinct line items so a hostile items_json cannot post an
+        // oversized cart (quantities for the same product still merge).
+        if (!isset($quantities[(int) $id]) && count($quantities) >= 20) {
+            $errors[] = 'Orders are limited to 20 different arrangements. Please reduce or split your cart.';
+            continue;
+        }
+
         $quantities[(int) $id] = ($quantities[(int) $id] ?? 0) + (int) $qty;
         if ($quantities[(int) $id] > 99) {
             $errors[] = 'The maximum quantity per arrangement is 99.';
@@ -408,8 +415,8 @@ function zf_search_orders(PDO $db, string $search = '', string $status = '', str
     $params = [];
 
     if ($search !== '') {
-        $sql .= ' AND (order_code LIKE :q1 OR customer_name LIKE :q2 OR contact_number LIKE :q3)';
-        $term = '%' . $search . '%';
+        $sql .= " AND (order_code LIKE :q1 ESCAPE '\\' OR customer_name LIKE :q2 ESCAPE '\\' OR contact_number LIKE :q3 ESCAPE '\\')";
+        $term = zf_like_term($search);
         $params[':q1'] = $term;
         $params[':q2'] = $term;
         $params[':q3'] = $term;

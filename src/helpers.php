@@ -174,6 +174,21 @@ function zf_random_password(int $length = 16): string
     return $password;
 }
 
+/**
+ * Escape LIKE wildcards so user-supplied search terms act as substrings,
+ * never as %, _ or backslash patterns. Pair the bound value with an
+ * `ESCAPE '\'` clause on the LIKE predicate.
+ *
+ * Deliberately lives in this always-loaded file so src/orders.php and
+ * src/products.php can never diverge.
+ */
+function zf_like_term(string $term): string
+{
+    $escaped = addcslashes($term, '\%_');
+
+    return '%' . $escaped . '%';
+}
+
 function zf_format_date(?string $date, string $format = 'M j, Y'): string
 {
     if (!$date) {
