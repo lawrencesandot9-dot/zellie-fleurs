@@ -12,14 +12,16 @@ PASSED=0
 FAILED=0
 SERVER_PID=""
 ISO_PID=""
+BROKEN_PID=""
 
 cleanup() {
-    for pid in "$SERVER_PID" "$ISO_PID"; do
+    for pid in "$SERVER_PID" "$ISO_PID" "$BROKEN_PID"; do
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null || true
             wait "$pid" 2>/dev/null || true
         fi
     done
+    chmod 755 "${TMP}/ro" 2>/dev/null || true
     rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -43,10 +45,11 @@ contains() {
 
 echo "Starting test server on port ${PORT}…"
 ZF_DB_PATH="$TMP/shop.db" \
+ZF_LOG_PATH="$TMP/error.log" \
 ZF_ADMIN_USER="admin" \
 ZF_ADMIN_PASSWORD="HttpTest123!" \
 ZF_DEBUG=0 \
-php -S "127.0.0.1:${PORT}" -t "$ROOT/public" >"$SERVER_LOG" 2>&1 &
+php -S "127.0.0.1:${PORT}" -t "$ROOT/public" "$ROOT/public/router.php" >"$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 
 for _ in $(seq 1 40); do
@@ -740,12 +743,13 @@ JAR2_OLD="$TMP/jar2-old.txt"
 ISO_LOG="$TMP/server2.log"
 
 ZF_DB_PATH="$TMP/shop2.db" \
+ZF_LOG_PATH="$TMP/error2.log" \
 ZF_ADMIN_USER="admin" \
 ZF_ADMIN_PASSWORD="HttpTest123!" \
 ZF_ADMIN_IDLE_TIMEOUT=2 \
 ZF_ADMIN_ABSOLUTE_TIMEOUT=3 \
 ZF_DEBUG=0 \
-php -S "127.0.0.1:${PORT2}" -t "$ROOT/public" >"$ISO_LOG" 2>&1 &
+php -S "127.0.0.1:${PORT2}" -t "$ROOT/public" "$ROOT/public/router.php" >"$ISO_LOG" 2>&1 &
 ISO_PID=$!
 
 for _ in $(seq 1 40); do
@@ -779,7 +783,12 @@ DASH2=$(curl -sS -b "$JAR2" -c "$JAR2" -o "$TMP/iso-dash.html" -w '%{http_code}'
 [ "$DASH2" = "200" ] && pass "immediate admin access works after login" || fail "immediate admin access works after login" "status $DASH2"
 
 # Idle timeout: 2s of inactivity must bounce the admin session to login.
-sleep 2.5
+# The sleep is deliberately generous: on some Android devices CLOCK_REALTIME
+# (PHP time()) is slewed during sleeps and advances slower than the shell's
+# monotonic clock (observed: 2.0s of realtime across a 2.5s sleep). A sleep
+# at the 2s idle boundary therefore races; 4s of real time guarantees the
+# server-side elapsed time exceeds the 2s idle window under worst-case slew.
+sleep 4
 ISO_EXPIRED_STATUS=$(curl -sS -b "$JAR2" -c "$JAR2" -o /dev/null -w '%{http_code}|%{redirect_url}' "$BASE2/admin/index.php")
 case "$ISO_EXPIRED_STATUS" in
     303*login.php*) pass "idle timeout redirects the admin session to login" ;;
@@ -825,7 +834,13 @@ else
     fail "admin activity refreshes the idle timer" "first $A1 second $A2"
 fi
 
-sleep 1.2
+# The absolute cap (3s since login) must expire the session even though
+# activity was recent. Sleep generous for CLOCK_REALTIME slewing on some
+# Android devices (see the idle-timeout note above): the A1/A2 gaps stay
+# under the 2s idle window server-side, so any expiry here is attributable
+# to the absolute cap, while 2.4s of real time guarantees the cumulative
+# server-side login age exceeds 3s even at ~70% slew.
+sleep 2.4
 A3=$(curl -sS -b "$JAR2" -c "$JAR2" -o /dev/null -w '%{http_code}|%{redirect_url}' "$BASE2/admin/index.php")
 case "$A3" in
     303*login.php*) pass "absolute timeout expires the session despite recent activity" ;;
@@ -945,6 +960,98 @@ if grep -Eq 'PHP (Warning|Fatal error|Parse error)' "$ISO_LOG"; then
 else
     pass "isolated server log contains no PHP warnings or fatal errors"
 fi
+
+echo ""
+echo "Error handling: branded 404 and protected log (main server)"
+echo "-----------------------------------------------------------"
+MISSING_ROUTE=$(curl -sS -o "$TMP/404-route.html" -w '%{http_code}' "$BASE/definitely-not-here.php")
+if [ "$MISSING_ROUTE" = "404" ]; then pass "missing route returns 404"; else fail "missing route returns 404" "got $MISSING_ROUTE"; fi
+contains "$TMP/404-route.html" "could not find that page" && pass "missing route shows the branded 404 message" || fail "missing route shows the branded 404 message"
+contains "$TMP/404-route.html" "logo-mark.svg" && pass "branded 404 keeps the visual identity" || fail "branded 404 keeps the visual identity"
+! grep -Eq 'Fatal error|Warning:|Stack trace|ZF_ROOT|shop\.db|/data/data' "$TMP/404-route.html" && pass "branded 404 leaks no internal details" || fail "branded 404 leaks no internal details"
+
+MISSING_ASSET=$(curl -sS -o "$TMP/404-asset.html" -w '%{http_code}' "$BASE/assets/js/definitely-not-here.js")
+[ "$MISSING_ASSET" = "404" ] && contains "$TMP/404-asset.html" "could not find that page" && pass "missing asset returns the branded 404" || fail "missing asset returns the branded 404" "got $MISSING_ASSET"
+
+API404=$(curl -sS -o "$TMP/404-api.json" -w '%{http_code}' "$BASE/api/definitely-not-here.php")
+if [ "$API404" = "404" ] && php -r '$d=json_decode(file_get_contents($argv[1]),true); exit(($d!==null && isset($d["ok"]) && $d["ok"]===false) ? 0 : 1);' "$TMP/404-api.json"; then
+    pass "missing API route returns a JSON 404"
+else
+    fail "missing API route returns a JSON 404" "got $API404"
+fi
+
+MISSING_PRODUCT=$(curl -sS -o "$TMP/404-product.html" -w '%{http_code}' "$BASE/product.php?id=999999")
+[ "$MISSING_PRODUCT" = "404" ] && contains "$TMP/404-product.html" "could not be found" && pass "missing product still returns a branded 404" || fail "missing product still returns a branded 404" "got $MISSING_PRODUCT"
+
+# Main-server protected log: written outside the webroot, never into the
+# repo's data/ directory. With ZF_DEBUG=0 and no errors nothing is logged
+# (expected validation failures and 404s are deliberately not logged), so
+# an absent file is a clean result; if entries exist they must be clean.
+if [ -f "$TMP/error.log" ]; then
+    if grep -Eq 'PHP (Warning|Fatal error|Parse error)' "$TMP/error.log"; then
+        fail "main server protected log is clean"
+        grep -E 'PHP (Warning|Fatal error|Parse error)' "$TMP/error.log" | head -5
+    else
+        pass "main server protected log is clean"
+    fi
+    LOG_PERMS=$(stat -c '%a' "$TMP/error.log" 2>/dev/null || stat -f '%Lp' "$TMP/error.log" 2>/dev/null)
+    [ "$LOG_PERMS" = "600" ] && pass "main server protected log has 0600 permissions" || fail "main server protected log has 0600 permissions" "got $LOG_PERMS"
+else
+    pass "main server logged nothing (no errors occurred) — protected log target verified on the broken-DB server below"
+fi
+
+echo ""
+echo "Error handling: clean 500 and API JSON (isolated broken-DB server on port ${ZF_TEST_PORT3:-8125})"
+echo "------------------------------------------------------------------------------------------------"
+PORT3="${ZF_TEST_PORT3:-8125}"
+BASE3="http://127.0.0.1:${PORT3}"
+BROKEN_LOG="$TMP/broken-error.log"
+mkdir -p "$TMP/ro"
+chmod 555 "$TMP/ro"
+
+BROKEN_PID=""
+# Cleanup of the broken-DB server is handled by the shared cleanup() trap at
+# the top of the file (BROKEN_PID is included there); the read-only directory
+# needs its write bit back before rm -rf can clear $TMP.
+
+ZF_DB_PATH="$TMP/ro/shop.db" \
+ZF_LOG_PATH="$BROKEN_LOG" \
+ZF_DEBUG=0 \
+php -S "127.0.0.1:${PORT3}" -t "$ROOT/public" "$ROOT/public/router.php" >"$TMP/broken-server.log" 2>&1 &
+BROKEN_PID=$!
+
+for _ in $(seq 1 40); do
+    if curl -sS -o /dev/null "$BASE3/" 2>/dev/null; then break; fi
+    sleep 0.2
+done
+
+PAGE500=$(curl -sS -o "$TMP/500-page.html" -w '%{http_code}' "$BASE3/index.php")
+if [ "$PAGE500" = "500" ]; then pass "uncaught database failure returns HTTP 500"; else fail "uncaught database failure returns HTTP 500" "got $PAGE500"; fi
+contains "$TMP/500-page.html" "Something went wrong" && pass "clean 500 response is user-friendly" || fail "clean 500 response is user-friendly"
+! grep -Eq 'PDOException|shop\.db|/data/data|Stack trace|ZF_|Exception' "$TMP/500-page.html" && pass "clean 500 exposes no internal details" || fail "clean 500 exposes no internal details"
+
+API500=$(curl -sS -o "$TMP/500-api.json" -D "$TMP/500-api-headers.txt" -w '%{http_code}' "$BASE3/api/products.php")
+if [ "$API500" = "500" ]; then pass "API failure returns HTTP 500"; else fail "API failure returns HTTP 500" "got $API500"; fi
+if php -r '$d=json_decode(file_get_contents($argv[1]),true); exit(($d!==null && isset($d["ok"]) && $d["ok"]===false) ? 0 : 1);' "$TMP/500-api.json"; then
+    pass "API failure returns valid JSON with ok=false"
+else
+    fail "API failure returns valid JSON with ok=false"
+fi
+grep -Eqi '^Content-Type: application/json' "$TMP/500-api-headers.txt" \
+    && pass "API failure Content-Type is application/json" \
+    || fail "API failure Content-Type is application/json"
+! grep -Eq 'PDOException|Stack trace|<html|<body' "$TMP/500-api.json" && pass "API failure JSON exposes no internals and is never HTML" || fail "API failure JSON exposes no internals and is never HTML"
+
+# The protected log recorded the failure with timestamp, type and source.
+if grep -Eq '\[20[0-9]{2}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}' "$BROKEN_LOG" \
+   && grep -Fq 'Database bootstrap failed' "$BROKEN_LOG"; then
+    pass "protected log records the failure with a timestamp"
+else
+    fail "protected log records the failure with a timestamp"
+fi
+! grep -Eq 'password=|csrf_token=|session_id=' "$BROKEN_LOG" && pass "protected log contains no secret-shaped values" || fail "protected log contains no secret-shaped values"
+BROKEN_PERMS=$(stat -c '%a' "$BROKEN_LOG" 2>/dev/null || stat -f '%Lp' "$BROKEN_LOG" 2>/dev/null)
+[ "$BROKEN_PERMS" = "600" ] && pass "protected log file has 0600 permissions" || fail "protected log file has 0600 permissions" "got $BROKEN_PERMS"
 
 echo ""
 echo "${PASSED} passed, ${FAILED} failed."

@@ -259,7 +259,7 @@ function zf_create_order(PDO $db, array $input, ?string $clientToken = null): ar
             }
         }
 
-        error_log('[Zellie Fleurs] Order creation failed: ' . $e->getMessage());
+        zf_error_log('order-creation-failure', $e->getMessage(), $e->getFile() . ':' . $e->getLine());
         return [
             'ok' => false,
             'errors' => ['We could not place your order right now. Please try again in a moment.'],
@@ -388,7 +388,7 @@ function zf_update_order_status(PDO $db, int $orderId, string $newStatus, ?strin
         if ($db->inTransaction()) {
             $db->rollBack();
         }
-        error_log('[Zellie Fleurs] Status update failed: ' . $e->getMessage());
+        zf_error_log('order-status-update-failure', $e->getMessage(), $e->getFile() . ':' . $e->getLine());
         $error = 'We could not update the order status. Please try again.';
         if ($e instanceof RuntimeException && !($e instanceof PDOException)) {
             $error = $e->getMessage();
@@ -473,7 +473,7 @@ function zf_track_lookup_blocked(PDO $db, string $ip): bool
     } catch (Throwable $e) {
         // Fail open: a throttling infrastructure problem must never take the
         // tracking page down.
-        error_log('[Zellie Fleurs] Lookup throttle check failed: ' . $e->getMessage());
+        zf_error_log('lookup-throttle-failure', $e->getMessage(), $e->getFile() . ':' . $e->getLine());
         return false;
     }
 }
@@ -484,6 +484,6 @@ function zf_record_lookup_failure(PDO $db, string $ip): void
         $stmt = $db->prepare('INSERT INTO lookup_attempts (ip_address) VALUES (?)');
         $stmt->execute([$ip]);
     } catch (Throwable $e) {
-        error_log('[Zellie Fleurs] Lookup failure could not be recorded: ' . $e->getMessage());
+        zf_error_log('lookup-record-failure', $e->getMessage(), $e->getFile() . ':' . $e->getLine());
     }
 }

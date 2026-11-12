@@ -1,2 +1,5 @@
 Options -Indexes
 DirectoryIndex index.php
+
+# Branded 404 page for missing routes and resources (Apache deployments).
+ErrorDocument 404 /404.php

@@ -110,7 +110,7 @@ function zf_admin_logged_in(): bool
                 return false;
             }
         } catch (Throwable $e) {
-            error_log('[Zellie Fleurs] Admin session validation skipped: ' . $e->getMessage());
+            zf_error_log('admin-session-validation-skipped', $e->getMessage(), $e->getFile() . ':' . $e->getLine());
         }
     }
 
@@ -191,7 +191,7 @@ function zf_auth_login(PDO $db, string $username, string $password): array
         $record = $db->prepare('INSERT INTO login_attempts (username, ip_address) VALUES (?, ?)');
         $record->execute([$username, $ip]);
     } catch (Throwable $e) {
-        error_log('[Zellie Fleurs] Login error: ' . $e->getMessage());
+        zf_error_log('login-failure', $e->getMessage(), $e->getFile() . ':' . $e->getLine());
         return ['ok' => false, 'error' => 'We could not sign you in right now. Please try again.'];
     }
 

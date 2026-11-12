@@ -246,7 +246,7 @@ function zf_save_product(PDO $db, array $input, ?array $file, ?int $id, array &$
 
         return $id;
     } catch (Throwable $e) {
-        error_log('[Zellie Fleurs] Product save failed: ' . $e->getMessage());
+        zf_error_log('product-save-failure', $e->getMessage(), $e->getFile() . ':' . $e->getLine());
         $errors[] = 'We could not save the product. Please try again.';
         return null;
     }

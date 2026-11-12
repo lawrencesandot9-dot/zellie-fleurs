@@ -25,6 +25,6 @@ try {
 
     zf_json_response(['ok' => true, 'products' => $payload]);
 } catch (Throwable $e) {
-    error_log('[Zellie Fleurs] Products API failed: ' . $e->getMessage());
+    zf_error_log('api-failure', $e->getMessage(), $e->getFile() . ':' . $e->getLine());
     zf_json_response(['ok' => false, 'products' => [], 'error' => 'Products are temporarily unavailable.'], 500);
 }

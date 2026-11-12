@@ -17,4 +17,6 @@ echo "Studio:     http://${HOST}:${PORT}/admin/login.php"
 echo "Press Ctrl+C to stop."
 echo ""
 
-exec php -S "${HOST}:${PORT}" -t "$ROOT/public"
+# The router answers missing routes with the branded 404 page; real files
+# and directories are served untouched by the built-in server.
+exec php -S "${HOST}:${PORT}" -t "$ROOT/public" "$ROOT/public/router.php"

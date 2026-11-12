@@ -59,7 +59,7 @@ function zf_update_settings(PDO $db, array $input, array &$errors): bool
         if ($db->inTransaction()) {
             $db->rollBack();
         }
-        error_log('[Zellie Fleurs] Settings update failed: ' . $e->getMessage());
+        zf_error_log('settings-update-failure', $e->getMessage(), $e->getFile() . ':' . $e->getLine());
         $errors[] = 'We could not save the shop settings. Please try again.';
         return false;
     }

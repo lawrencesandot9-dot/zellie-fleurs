@@ -18,6 +18,7 @@ $dbPath = $tmpDir . '/shop.db';
 @unlink($dbPath . '-shm');
 
 putenv('ZF_DB_PATH=' . $dbPath);
+putenv('ZF_LOG_PATH=' . $tmpDir . '/php-error.log');
 putenv('ZF_ADMIN_USER=admin');
 putenv('ZF_ADMIN_PASSWORD=TestAdmin123!');
 putenv('ZF_TESTING=1');

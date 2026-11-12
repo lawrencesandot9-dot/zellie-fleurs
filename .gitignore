@@ -56,3 +56,6 @@ credentials.php
 Thumbs.db
 *.swp
 *~
+
+# Workforce management workspace (never part of the application)
+/.workforce/
