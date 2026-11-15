@@ -31,8 +31,8 @@ $bodyClass = $bodyClass ?? '';
         <link rel="canonical" href="<?= zf_e($storeCanonical) ?>">
     <?php endif; ?>
     <link rel="icon" href="/assets/img/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/assets/css/style.css?v=20261111-admin">
-    <script defer src="/assets/js/app.js?v=20261111-admin"></script>
+    <link rel="stylesheet" href="/assets/css/style.css?v=20261115-checkout">
+    <script defer src="/assets/js/app.js?v=20261115-checkout"></script>
 </head>
 <body class="<?= zf_e($bodyClass) ?>">
 <a class="skip-link" href="#main">Skip to content</a>

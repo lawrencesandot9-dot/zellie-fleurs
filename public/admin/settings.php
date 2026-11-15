@@ -123,6 +123,12 @@ require ZF_ROOT . '/src/views/admin_header.php';
             </div>
 
             <div class="field">
+                <label for="notify_email">Notification email</label>
+                <input id="notify_email" type="email" name="notify_email" value="<?= zf_e($settings['notify_email'] ?? '') ?>" maxlength="120">
+                <small>Notification email — where new-order alerts are sent. Leave blank to disable new-order notifications.</small>
+            </div>
+
+            <div class="field">
                 <label for="delivery_info">Delivery information</label>
                 <textarea id="delivery_info" name="delivery_info" rows="3" maxlength="500"><?= zf_e($settings['delivery_info']) ?></textarea>
             </div>

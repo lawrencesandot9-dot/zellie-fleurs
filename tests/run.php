@@ -19,6 +19,9 @@ $dbPath = $tmpDir . '/shop.db';
 
 putenv('ZF_DB_PATH=' . $dbPath);
 putenv('ZF_LOG_PATH=' . $tmpDir . '/php-error.log');
+// Route new-order notification log lines to the temp dir for the whole run
+// so the suite never appends to the real data/order-notifications.log.
+putenv('ZF_ORDER_NOTIFICATION_LOG=' . $tmpDir . '/order-notifications.log');
 putenv('ZF_ADMIN_USER=admin');
 putenv('ZF_ADMIN_PASSWORD=TestAdmin123!');
 putenv('ZF_TESTING=1');
@@ -309,6 +312,82 @@ $settingsErrors = [];
 $saved = zf_update_settings($db, array_merge(zf_settings(true), ['shop_name' => 'Zellie Fleurs Test']), $settingsErrors);
 check('shop settings can be updated', $saved === true && zf_setting('shop_name') === 'Zellie Fleurs Test', implode('; ', $settingsErrors));
 
+section('New-order notifications');
+
+// (a) The notify_email setting round-trips through the save/validate helpers.
+check('notify_email defaults to disabled (empty string)', zf_setting('notify_email') === '');
+
+$settingsErrors = [];
+$validSave = zf_update_settings($db, array_merge(zf_settings(true), ['notify_email' => 'owner@zellie.example']), $settingsErrors);
+check('valid notify_email round-trips through the settings helpers', $validSave === true && zf_setting('notify_email') === 'owner@zellie.example', implode('; ', $settingsErrors));
+
+$settingsErrors = [];
+$invalidSave = zf_update_settings($db, array_merge(zf_settings(true), ['notify_email' => 'not-an-email']), $settingsErrors);
+check('invalid notify_email is rejected and not persisted', $invalidSave === false && $settingsErrors !== [] && zf_setting('notify_email') === 'owner@zellie.example', implode('; ', $settingsErrors));
+
+$settingsErrors = [];
+$emptySave = zf_update_settings($db, array_merge(zf_settings(true), ['notify_email' => '']), $settingsErrors);
+check('empty notify_email saves (notifications disabled)', $emptySave === true && zf_setting('notify_email') === '', implode('; ', $settingsErrors));
+
+// (b) zf_notify_new_order logs even with notifications disabled and never throws.
+$notifyLog = $tmpDir . '/notify-direct.log';
+@unlink($notifyLog);
+$notifyOrder = [
+    'id' => 123,
+    'order_code' => 'ZF-NOTIFY01',
+    'customer_name' => "Juan\nDela Cruz",
+    'total_amount' => 1899.0,
+    'delivery_date' => date('Y-m-d', strtotime('+2 days')),
+    'items_json' => '[{"qty":1},{"qty":2},{"qty":3}]',
+];
+$notifyThrew = false;
+try {
+    zf_notify_new_order($notifyOrder, $notifyLog);
+} catch (Throwable) {
+    $notifyThrew = true;
+}
+$notifyLines = is_file($notifyLog) ? file($notifyLog, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) : [];
+$notifyParts = $notifyLines !== [] ? explode(' | ', trim($notifyLines[0])) : [];
+check('notification log is written even when notify_email is empty and never throws', !$notifyThrew && count($notifyParts) === 5);
+$codeField = $notifyParts[1] ?? '';
+$nameField = $notifyParts[2] ?? '';
+$totalField = $notifyParts[3] ?? '';
+$countField = $notifyParts[4] ?? '';
+check('notification log line matches the timestamp | code | name | total | item count format', $codeField === 'ZF-NOTIFY01' && $nameField === 'Juan Dela Cruz' && $totalField === '1899.00' && $countField === '3', implode(' | ', $notifyParts));
+check('notification log is created with owner-only permissions', is_file($notifyLog) && (fileperms($notifyLog) & 0777) === 0600);
+
+$blockedPath = $notifyLog . '/blocked.log';
+$blockedThrew = false;
+try {
+    zf_notify_new_order($notifyOrder, $blockedPath);
+} catch (Throwable) {
+    $blockedThrew = true;
+}
+check('an unwritable notification log path never throws', $blockedThrew === false);
+
+// (c) The notification fires once per successful zf_create_order.
+// The original $productId product was deactivated earlier in the suite, so
+// pick any still-active stocked product the way the checkout would.
+$notifyProduct = $db->query('SELECT id FROM products WHERE is_active = 1 AND stock_quantity >= 1 ORDER BY id ASC LIMIT 1')->fetch();
+$notifyProductId = (int) ($notifyProduct['id'] ?? 0);
+check('an active product is available for the notification integration test', $notifyProductId > 0);
+$integrationLog = $tmpDir . '/order-notifications.log';
+$integrationBefore = is_file($integrationLog) ? count(file($integrationLog, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)) : 0;
+$notifyToken = 'notify-token-' . bin2hex(random_bytes(4));
+$notified = zf_create_order($db, orderInput($notifyProductId, 1, 'COD'), $notifyToken);
+$integrationLines = is_file($integrationLog) ? file($integrationLog, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) : [];
+check('a successful order appends exactly one notification line', $notified['ok'] === true && count($integrationLines) === $integrationBefore + 1, implode('; ', $notified['errors'] ?? []));
+$integrationLine = $integrationLines[$integrationBefore] ?? '';
+check('the notification line references the created order code', str_contains($integrationLine, (string) ($notified['order']['order_code'] ?? 'ZF-MISSING')), $integrationLine);
+
+if ($notified['ok'] === true) {
+    // A token-duplicate resolution must not fire a second notification: the
+    // original creation is the only one that notifies.
+    $duplicateNotified = zf_create_order($db, orderInput($notifyProductId, 1, 'COD'), $notifyToken);
+    $integrationAfterDup = is_file($integrationLog) ? count(file($integrationLog, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)) : 0;
+    check('duplicate token submissions do not re-notify', ($duplicateNotified['duplicate'] ?? false) === true && $integrationAfterDup === count($integrationLines));
+}
+
 section('Mobile navigation');
 $storeHeader = (string) file_get_contents(ZF_ROOT . '/src/views/store_header.php');
 $storeCss = (string) file_get_contents(ZF_PUBLIC . '/assets/css/style.css');
@@ -355,6 +434,156 @@ check('empty reference stays empty', zf_mask_reference('') === '');
 check('name masking keeps the first name and initialises the rest', zf_mask_name('Maria Santos') === 'Maria S.');
 check('single-word names are unchanged', zf_mask_name('Maria') === 'Maria');
 check('extra name parts each become initials', zf_mask_name('Anna Grace Reyes') === 'Anna G. R.');
+
+section('Order rate limiting');
+
+// Start from a clean slate so the quota arithmetic below is deterministic
+// (the checkout section above already recorded a few successful orders).
+zf_order_rate_limit_ready($db);
+$db->exec('DELETE FROM order_attempts');
+
+$rateLog = $tmpDir . '/order-notifications.log';
+$rateNotifyBase = is_file($rateLog) ? count(file($rateLog, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)) : 0;
+$rateProduct = $db->query('SELECT id, stock_quantity FROM products WHERE is_active = 1 AND stock_quantity >= 6 ORDER BY stock_quantity DESC, id ASC LIMIT 1')->fetch();
+$rateProductId = (int) ($rateProduct['id'] ?? 0);
+$prevRemoteAddr = $_SERVER['REMOTE_ADDR'] ?? null;
+$_SERVER['REMOTE_ADDR'] = '203.0.113.50';
+
+// (a) Under the cap: five successful checkouts in a row, each recorded once.
+$rateOk = true;
+if ($rateProductId > 0) {
+    for ($i = 1; $i <= 5; $i++) {
+        $rateResult = zf_create_order($db, orderInput($rateProductId, 1, 'COD'), 'rate-token-' . $i);
+        $rateOk = $rateOk && $rateResult['ok'] === true;
+    }
+}
+$rateOrdersAfterFive = (int) $db->query('SELECT COUNT(*) FROM orders')->fetchColumn();
+$rateRows = (int) $db->query("SELECT COUNT(*) FROM order_attempts WHERE ip_address = '203.0.113.50'")->fetchColumn();
+check('five orders within the cap succeed and each records one attempt', $rateProductId > 0 && $rateOk && $rateRows === 5 && $rateOrdersAfterFive >= 5, "rows {$rateRows}, orders {$rateOrdersAfterFive}");
+
+// (b) The 6th order is rejected before any state changes.
+$rateStockBefore = (int) zf_get_product($db, $rateProductId)['stock_quantity'];
+$rateOrdersBefore = $rateOrdersAfterFive;
+$blocked = zf_create_order($db, orderInput($rateProductId, 1, 'COD'), 'rate-token-6');
+$rateOrdersAfterBlock = (int) $db->query('SELECT COUNT(*) FROM orders')->fetchColumn();
+$rateStockAfter = (int) zf_get_product($db, $rateProductId)['stock_quantity'];
+$rateNotifyLines = is_file($rateLog) ? count(file($rateLog, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)) : 0;
+check('the 6th order within the hour is rejected', $blocked['ok'] === false, implode('; ', $blocked['errors'] ?? []));
+check('the rejection shows the friendly rate-limit message', str_contains($blocked['errors'][0] ?? '', 'Too many orders placed recently'), implode('; ', $blocked['errors'] ?? []));
+check('the rejected order creates no order row', $rateOrdersAfterBlock === $rateOrdersBefore, "before {$rateOrdersBefore} after {$rateOrdersAfterBlock}");
+check('the rejected order does not decrement stock', $rateStockAfter === $rateStockBefore, "before {$rateStockBefore} after {$rateStockAfter}");
+check('the rejected order fires no notification line', $rateNotifyLines === $rateNotifyBase + 5, "{$rateNotifyLines} vs base {$rateNotifyBase} + 5");
+
+// (e) The rejection consumed nothing: the same token still creates a fresh
+// order once the cap is lifted via the options override.
+$tokenReuse = zf_create_order($db, orderInput($rateProductId, 1, 'COD'), 'rate-token-6', ['max_per_hour' => 1000]);
+check('the rejected order burns no idempotency token', $tokenReuse['ok'] === true && ($tokenReuse['duplicate'] ?? true) === false, implode('; ', $tokenReuse['errors'] ?? []));
+
+// (c) Keying: the client IP is a fallback key alongside the session id, so
+// a fresh or sessionless client behind a flooded IP is blocked, while a
+// different IP is unaffected by someone else's flood.
+$floodIp = '198.51.100.77';
+$floodInsert = $db->prepare("INSERT INTO order_attempts (session_id, ip_address, created_at) VALUES ('attacker-session', ?, datetime('now', 'localtime'))");
+for ($i = 0; $i < 5; $i++) {
+    $floodInsert->execute([$floodIp]);
+}
+$floodBlocksFresh = zf_order_rate_limit_blocked($db, ['session_id' => 'victim-session', 'ip' => $floodIp]) !== null;
+$floodBlocksSessionless = zf_order_rate_limit_blocked($db, ['session_id' => '', 'ip' => $floodIp]) !== null;
+check('a flooded IP blocks fresh and sessionless clients alike (IP key)', $floodBlocksFresh && $floodBlocksSessionless);
+check('an order from a different IP is unaffected by a flooded IP', zf_order_rate_limit_blocked($db, ['session_id' => 'victim-session', 'ip' => '192.0.2.9']) === null);
+
+// (d) Rows older than the window are ignored and opportunistically removed.
+$db->exec("DELETE FROM order_attempts WHERE ip_address = '198.51.100.77'");
+$db->prepare("INSERT INTO order_attempts (session_id, ip_address, created_at) VALUES ('old-session', '192.0.2.99', datetime('now', 'localtime', '-2 hours'))")->execute();
+$oldKeys = ['session_id' => 'old-session', 'ip' => '192.0.2.99'];
+$oldNotCounted = zf_order_rate_limit_blocked($db, $oldKeys) === null;
+$oldRowsLeft = (int) $db->query("SELECT COUNT(*) FROM order_attempts WHERE session_id = 'old-session'")->fetchColumn();
+check('rows older than one hour do not count and are cleaned up', $oldNotCounted && $oldRowsLeft === 0, "blocked " . ($oldNotCounted ? 'no' : 'yes') . ", rows left {$oldRowsLeft}");
+
+// Failed validation must never burn the quota (only successes are recorded).
+$rateBad = zf_create_order($db, orderInput($rateProductId, 0));
+$rateRowsNow = (int) $db->query("SELECT COUNT(*) FROM order_attempts WHERE ip_address = '203.0.113.50'")->fetchColumn();
+check('failed validation attempts do not consume the quota', $rateBad['ok'] === false && $rateRowsNow === 6 && !str_contains(implode(' ', $rateBad['errors']), 'Too many'), "rows {$rateRowsNow}");
+
+// The ZF_ORDER_RATE_LIMIT environment override (used by the HTTP harness).
+putenv('ZF_ORDER_RATE_LIMIT=1');
+$envAllowed = zf_order_rate_limit_blocked($db, ['session_id' => 'env-session', 'ip' => '192.0.2.51']) === null;
+zf_record_order_attempt($db, ['session_id' => 'env-session', 'ip' => '192.0.2.51']);
+$envBlocked = zf_order_rate_limit_blocked($db, ['session_id' => 'env-session', 'ip' => '192.0.2.51']) !== null;
+putenv('ZF_ORDER_RATE_LIMIT');
+$db->exec("DELETE FROM order_attempts WHERE session_id = 'env-session'");
+check('ZF_ORDER_RATE_LIMIT env override is honored', $envAllowed && $envBlocked);
+
+if ($prevRemoteAddr !== null) {
+    $_SERVER['REMOTE_ADDR'] = $prevRemoteAddr;
+} else {
+    unset($_SERVER['REMOTE_ADDR']);
+}
+
+section('Same-day delivery cutoff');
+
+// The storefront announcement promises same-day delivery only for orders
+// placed before 12:00 PM (shop TZ, Asia/Manila via ZF_TZ). zf_create_order()
+// accepts an $options['now'] override (int unix timestamp, interpreted with
+// date('Y-m-d')/date('G') in the configured timezone) so these checks are
+// deterministic no matter what time of day the suite runs. Runs after the
+// rate-limit section, so its attempt-row arithmetic above is untouched; the
+// accepted cutoff orders raise the cap via the options override.
+$cutoffProduct = $db->query('SELECT id FROM products WHERE is_active = 1 AND stock_quantity >= 2 ORDER BY stock_quantity DESC, id ASC LIMIT 1')->fetch();
+$cutoffProductId = (int) ($cutoffProduct['id'] ?? 0);
+$cutoffLog = $tmpDir . '/order-notifications.log';
+$cutoffNotifyBase = is_file($cutoffLog) ? count(file($cutoffLog, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)) : 0;
+$cutoffOrdersBase = (int) $db->query('SELECT COUNT(*) FROM orders')->fetchColumn();
+
+if ($cutoffProductId > 0) {
+    $cutoffToday = date('Y-m-d');
+    $cutoffTomorrow = date('Y-m-d', strtotime('+1 day'));
+    $cutoffYesterday = date('Y-m-d', strtotime('-1 day'));
+    $cutoffBefore = strtotime('today 10:00');  // 10:00 AM local — before cutoff
+    $cutoffAt = strtotime('today 12:00');      // 12:00:00 sharp — at cutoff
+    $cutoffAfter = strtotime('today 15:30');   // 3:30 PM local — after cutoff
+    $cutoffMessage = 'Same-day delivery is available only for orders placed before 12:00 PM. Please choose tomorrow or another date.';
+    $cutoffClock = static fn (int $ts): array => ['now' => $ts, 'max_per_hour' => 1000];
+    $cutoffInput = static fn (string $date): array => array_merge(orderInput($cutoffProductId, 1, 'COD'), ['delivery_date' => $date]);
+
+    // (a) Before the cutoff, a same-day order is accepted and stored as-is.
+    $cutoffEarly = zf_create_order($db, $cutoffInput($cutoffToday), 'cutoff-early', $cutoffClock($cutoffBefore));
+    check('an order for today before the cutoff (10:00) is accepted with today as the date', $cutoffProductId > 0 && $cutoffEarly['ok'] === true && ($cutoffEarly['order']['delivery_date'] ?? '') === $cutoffToday, implode('; ', $cutoffEarly['errors'] ?? []));
+
+    // (b) The announcement says "before 12:00 PM", so 12:00:00 sharp is
+    // already too late: hour >= ZF_SAME_DAY_CUTOFF_HOUR rejects.
+    $cutoffNoon = zf_create_order($db, $cutoffInput($cutoffToday), 'cutoff-noon', $cutoffClock($cutoffAt));
+    check('an order for today at exactly 12:00 is rejected with the cutoff message and field error', $cutoffNoon['ok'] === false && str_contains($cutoffNoon['errors'][0] ?? '', $cutoffMessage) && ($cutoffNoon['field_errors']['delivery_date'] ?? false) === true, implode('; ', $cutoffNoon['errors'] ?? []));
+
+    // (c) After the cutoff, a same-day order is rejected with the message.
+    $cutoffLate = zf_create_order($db, $cutoffInput($cutoffToday), 'cutoff-late', $cutoffClock($cutoffAfter));
+    check('an order for today after the cutoff (15:30) is rejected with the cutoff message', $cutoffLate['ok'] === false && str_contains($cutoffLate['errors'][0] ?? '', $cutoffMessage), implode('; ', $cutoffLate['errors'] ?? []));
+
+    // (d) After the cutoff, tomorrow is still bookable.
+    $cutoffTomorrowOrder = zf_create_order($db, $cutoffInput($cutoffTomorrow), 'cutoff-tomorrow', $cutoffClock($cutoffAfter));
+    check('an order for tomorrow after the cutoff (15:30) is accepted with tomorrow as the date', $cutoffTomorrowOrder['ok'] === true && ($cutoffTomorrowOrder['order']['delivery_date'] ?? '') === $cutoffTomorrow, implode('; ', $cutoffTomorrowOrder['errors'] ?? []));
+
+    // (e) Check order matters: yesterday must still be caught by the
+    // pre-existing past-date validation, never shadowed by the cutoff branch.
+    $cutoffPast = zf_create_order($db, $cutoffInput($cutoffYesterday), 'cutoff-past', $cutoffClock($cutoffAfter));
+    check("yesterday's date is still rejected by the past-date validation, not the cutoff", $cutoffPast['ok'] === false && str_contains($cutoffPast['errors'][0] ?? '', 'The delivery date cannot be in the past'), implode('; ', $cutoffPast['errors'] ?? []));
+
+    // (f) The cutoff rejection happens during validation, before the token
+    // replay, rate-limit check, transaction or notification: no partial
+    // state of any kind (mirrors the rate-limit assertions above).
+    $cutoffStockBase = (int) zf_get_product($db, $cutoffProductId)['stock_quantity'];
+    $cutoffAttemptsBase = (int) $db->query('SELECT COUNT(*) FROM order_attempts')->fetchColumn();
+    $cutoffRejected = zf_create_order($db, $cutoffInput($cutoffToday), 'cutoff-rejected', ['now' => $cutoffAfter]);
+    $cutoffOrdersNow = (int) $db->query('SELECT COUNT(*) FROM orders')->fetchColumn();
+    $cutoffStockNow = (int) zf_get_product($db, $cutoffProductId)['stock_quantity'];
+    $cutoffNotifyNow = is_file($cutoffLog) ? count(file($cutoffLog, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)) : 0;
+    $cutoffAttemptsNow = (int) $db->query('SELECT COUNT(*) FROM order_attempts')->fetchColumn();
+    check('the after-cutoff rejection fires the cutoff message', $cutoffRejected['ok'] === false && str_contains($cutoffRejected['errors'][0] ?? '', $cutoffMessage), implode('; ', $cutoffRejected['errors'] ?? []));
+    check('the cutoff rejection writes no order row', $cutoffOrdersNow === $cutoffOrdersBase + 2, "before {$cutoffOrdersBase} after {$cutoffOrdersNow}");
+    check('the cutoff rejection does not decrement stock', $cutoffStockNow === $cutoffStockBase, "before {$cutoffStockBase} after {$cutoffStockNow}");
+    check('the cutoff rejection fires no notification line', $cutoffNotifyNow === $cutoffNotifyBase + 2, "{$cutoffNotifyNow} vs base {$cutoffNotifyBase} + 2");
+    check('the cutoff rejection records no order attempt', $cutoffAttemptsNow === $cutoffAttemptsBase, "before {$cutoffAttemptsBase} after {$cutoffAttemptsNow}");
+}
 
 section('Lookup rate limiting');
 $rlIp = '192.0.2.77';

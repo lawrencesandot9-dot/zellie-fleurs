@@ -204,6 +204,12 @@ require ZF_ROOT . '/src/views/store_header.php';
                 <p>Tell us where the flowers are going. Your total is always calculated securely on our server.</p>
             </div>
 
+            <noscript>
+                <div class="cart-page__noscript">
+                    <p><strong>Your browser has JavaScript turned off.</strong> Your cart lives in your browser, so the order summary on this page is unavailable. You can still order — <strong>message the studio</strong> at <?= zf_contact_link($settings['contact_number']) ?> with the arrangements you would like, and we will place the order for you by hand. You are also welcome at the studio, <?= zf_e($settings['store_address']) ?> (<?= zf_e($settings['operating_hours']) ?>).</p>
+                </div>
+            </noscript>
+
             <?php if ($pageError !== ''): ?>
                 <div class="flash flash--error" role="alert"><?= zf_e($pageError) ?></div>
             <?php endif; ?>

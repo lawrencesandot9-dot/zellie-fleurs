@@ -46,6 +46,8 @@ contains() {
 echo "Starting test server on port ${PORT}…"
 ZF_DB_PATH="$TMP/shop.db" \
 ZF_LOG_PATH="$TMP/error.log" \
+ZF_ORDER_NOTIFICATION_LOG="$TMP/order-notifications.log" \
+ZF_ORDER_RATE_LIMIT=5 \
 ZF_ADMIN_USER="admin" \
 ZF_ADMIN_PASSWORD="HttpTest123!" \
 ZF_DEBUG=0 \
@@ -68,7 +70,7 @@ contains "$TMP/index.html" "Add to cart" && pass "add-to-cart buttons render" ||
 contains "$TMP/index.html" "assets/img/products/blush-roses.jpg" && pass "local product photography is used" || fail "local product photography is used"
 contains "$TMP/index.html" 'aria-controls="mobile-menu"' && pass "mobile menu trigger is wired for accessibility" || fail "mobile menu trigger is wired for accessibility"
 grep -Eq '<nav[^>]*id="mobile-menu"[^>]*hidden' "$TMP/index.html" && pass "mobile navigation is hidden by default" || fail "mobile navigation is hidden by default"
-contains "$TMP/index.html" 'style.css?v=20261111-admin' && pass "versioned stylesheet is served" || fail "versioned stylesheet is served"
+contains "$TMP/index.html" 'style.css?v=20261115-checkout' && pass "versioned stylesheet is served" || fail "versioned stylesheet is served"
 
 curl -sS -o "$TMP/products.json" "$BASE/api/products.php"
 PRODUCT_ID=$(php -r '$d=json_decode(file_get_contents($argv[1]),true); echo $d["products"][0]["id"] ?? "";' "$TMP/products.json")
@@ -177,6 +179,13 @@ CSRF=$(extract_hidden csrf_token < "$TMP/checkout.html")
 CHECKOUT_TOKEN=$(extract_hidden checkout_token < "$TMP/checkout.html")
 [ -n "$CSRF" ] && [ -n "$CHECKOUT_TOKEN" ] && pass "checkout form includes CSRF and idempotency tokens" || fail "checkout form includes CSRF and idempotency tokens"
 
+# Same-day delivery cutoff note: the cutoff (orders for TODAY are rejected at
+# or after 12:00 PM shop time, see ZF_SAME_DAY_CUTOFF_HOUR in src/orders.php)
+# cannot be forced from this harness — it runs on the real wall clock. That
+# is why every checkout POST below uses a FUTURE delivery date (+3 days): the
+# suite must pass whether it runs at 09:00 or 17:00. The cutoff itself is
+# covered deterministically by the "Same-day delivery cutoff" section in
+# tests/run.php via the $options['now'] clock override.
 DELIVERY_DATE=$(date -d '+3 days' '+%Y-%m-%d' 2>/dev/null || date -v+3d '+%Y-%m-%d')
 CHECKOUT=$(curl -sS -b "$JAR" -c "$JAR" -o "$TMP/checkout-response.html" -D "$TMP/checkout-headers.txt" -w '%{http_code}' \
     --data-urlencode "csrf_token=$CSRF" \
@@ -506,6 +515,22 @@ else
     fail "cart page noscript block references contact info"
 fi
 
+# Checkout page must carry the same no-JS manual-order path: settings-driven
+# contact details instead of an unopenable JS-only form loop.
+curl -sS -o "$TMP/checkout-noscript.html" "$BASE/checkout.php"
+awk '/<noscript>/,/<\/noscript>/' "$TMP/checkout-noscript.html" > "$TMP/checkout-noscript.txt"
+if grep -Fq "message the studio" "$TMP/checkout-noscript.txt" && \
+   { grep -Fq 'tel:' "$TMP/checkout-noscript.txt" || grep -Fq "No contact details published yet" "$TMP/checkout-noscript.txt"; }; then
+    pass "checkout page noscript block references contact info"
+else
+    fail "checkout page noscript block references contact info"
+fi
+if grep -Fq "JavaScript turned off" "$TMP/checkout-noscript.txt"; then
+    pass "checkout page noscript explains JavaScript is required"
+else
+    fail "checkout page noscript explains JavaScript is required"
+fi
+
 echo ""
 echo "Checkout bot-guards and edge-case validation"
 echo "--------------------------------------------"
@@ -513,6 +538,8 @@ echo "--------------------------------------------"
 curl -sS -b "$JAR" -c "$JAR" -o "$TMP/checkout-hidden.html" "$BASE/checkout.php"
 contains "$TMP/checkout-hidden.html" 'left:-9999px' && pass "honeypot field is visually hidden with inline style" || fail "honeypot field is visually hidden with inline style"
 
+# Same-day cutoff: use a future date (+3 days), never today — see the note
+# above DELIVERY_DATE; the cutoff is covered by tests/run.php.
 GOOD_DATE=$(date -d '+3 days' '+%Y-%m-%d' 2>/dev/null || date -v+3d '+%Y-%m-%d')
 FAR_DATE=$(date -d '+181 days' '+%Y-%m-%d' 2>/dev/null || date -v+181d '+%Y-%m-%d')
 
@@ -776,6 +803,94 @@ fi
 REPLAY_CODE=$(echo "$REPLAY_LOCATION" | grep -oE 'ZF-[A-HJ-NP-Z2-9]{12}' | head -1)
 REPLAY_CONFIRM=$(curl -sS -b "$JAR" -c "$JAR" -o "$TMP/replay-confirm.html" -w '%{http_code}' "$BASE/checkout.php?order=$REPLAY_CODE")
 [ "$REPLAY_CONFIRM" = "200" ] && contains "$TMP/replay-confirm.html" "Order received" && pass "replayed redirect still lands on the confirmation page" || fail "replayed redirect still lands on the confirmation page" "status $REPLAY_CONFIRM location '$REPLAY_LOCATION'"
+
+# ---------------------------------------------------------------------------
+# Order rate limiting. The storefront session/IP (same cookie jar, same
+# 127.0.0.1 source) has placed FOUR successful orders so far: the first
+# checkout, the >2s bot-guard order, the XSS probe order and the GCash
+# order. One more is still under the default cap of five (ZF_ORDER_RATE_
+# LIMIT=5 is exported to the server above); the one after that must be
+# rejected before any state changes. Replays of the GCash token never burn
+# the quota: idempotent duplicates resolve before the cap is consulted.
+# Kept just before the lookup throttle because both consume per-IP quota
+# and that section must stay last.
+# ---------------------------------------------------------------------------
+echo ""
+echo "Order rate limiting"
+echo "-------------------"
+RATE_LOG="$TMP/order-notifications.log"
+
+# 5th order within the hour: valid tokens, patient submit — must succeed.
+curl -sS -b "$JAR" -c "$JAR" -o "$TMP/checkout-rate5.html" "$BASE/checkout.php"
+RATE5_CSRF=$(extract_hidden csrf_token < "$TMP/checkout-rate5.html")
+RATE5_LOADED=$(extract_hidden form_loaded_at < "$TMP/checkout-rate5.html")
+RATE5_TOKEN=$(extract_hidden checkout_token < "$TMP/checkout-rate5.html")
+sleep 3.5
+RATE5=$(curl -sS -b "$JAR" -c "$JAR" -o "$TMP/rate5-response.html" -D "$TMP/rate5-headers.txt" -w '%{http_code}' \
+    --data-urlencode "csrf_token=$RATE5_CSRF" \
+    --data-urlencode "checkout_token=$RATE5_TOKEN" \
+    --data-urlencode "form_loaded_at=$RATE5_LOADED" \
+    --data-urlencode "website=" \
+    --data-urlencode "items_json=[{\"id\":1,\"qty\":1}]" \
+    --data-urlencode "customer_name=Http Fifth Customer" \
+    --data-urlencode "contact_number=0917 555 1234" \
+    --data-urlencode "delivery_address=88 Garden Street, Barangay Bloom, Quezon City" \
+    --data-urlencode "delivery_date=$DELIVERY_DATE" \
+    --data-urlencode "payment_method=COD" \
+    "$BASE/checkout.php")
+RATE5_CODE=$(php -r '$h=file_get_contents($argv[1]); if(preg_match("/^Location:\\s*(.+)$/mi",$h,$m) && preg_match("/ZF-[A-HJ-NP-Z2-9]{12}/",$m[1],$c)) echo $c[0];' "$TMP/rate5-headers.txt")
+if [ "$RATE5" = "303" ] && [ -n "$RATE5_CODE" ]; then
+    pass "the 5th order within the hour still succeeds (under the cap)"
+else
+    fail "the 5th order within the hour still succeeds (under the cap)" "status $RATE5 code $RATE5_CODE"
+fi
+
+# 6th order within the hour: the cap is now full. The friendly error must
+# render and no state may change: no order row, no stock decrement, no
+# notification line.
+# Baselines are captured here — AFTER the 5th order has succeeded and been
+# recorded, BEFORE the rejected 6th is attempted — so the delta below spans
+# only the rejected request.
+ORDERS_BEFORE_RATE=$(sqlite3 "$TMP/shop.db" "SELECT COUNT(*) FROM orders;")
+STOCK1_BEFORE_RATE=$(sqlite3 "$TMP/shop.db" "SELECT stock_quantity FROM products WHERE id = 1;")
+curl -sS -b "$JAR" -c "$JAR" -o "$TMP/checkout-rate6.html" "$BASE/checkout.php"
+RATE6_CSRF=$(extract_hidden csrf_token < "$TMP/checkout-rate6.html")
+RATE6_LOADED=$(extract_hidden form_loaded_at < "$TMP/checkout-rate6.html")
+RATE6_TOKEN=$(extract_hidden checkout_token < "$TMP/checkout-rate6.html")
+sleep 3.5
+RATE6=$(curl -sS -b "$JAR" -c "$JAR" -o "$TMP/rate6-response.html" -w '%{http_code}' \
+    --data-urlencode "csrf_token=$RATE6_CSRF" \
+    --data-urlencode "checkout_token=$RATE6_TOKEN" \
+    --data-urlencode "form_loaded_at=$RATE6_LOADED" \
+    --data-urlencode "website=" \
+    --data-urlencode "items_json=[{\"id\":1,\"qty\":1}]" \
+    --data-urlencode "customer_name=Http Sixth Customer" \
+    --data-urlencode "contact_number=0917 555 1234" \
+    --data-urlencode "delivery_address=88 Garden Street, Barangay Bloom, Quezon City" \
+    --data-urlencode "delivery_date=$DELIVERY_DATE" \
+    --data-urlencode "payment_method=COD" \
+    "$BASE/checkout.php")
+ORDERS_AFTER_RATE=$(sqlite3 "$TMP/shop.db" "SELECT COUNT(*) FROM orders;")
+STOCK1_AFTER_RATE=$(sqlite3 "$TMP/shop.db" "SELECT stock_quantity FROM products WHERE id = 1;")
+RATE_LOG_LINES=$(wc -l < "$RATE_LOG" 2>/dev/null || echo 0)
+RATE_ATTEMPTS=$(sqlite3 "$TMP/shop.db" "SELECT COUNT(*) FROM order_attempts;" 2>/dev/null || echo 0)
+if [ "$RATE6" = "200" ] && contains "$TMP/rate6-response.html" "Too many orders placed recently"; then
+    pass "the 6th order within the hour is rejected with the friendly message"
+else
+    fail "the 6th order within the hour is rejected with the friendly message" "status $RATE6"
+fi
+if [ "$ORDERS_AFTER_RATE" = "$ORDERS_BEFORE_RATE" ] && [ "$STOCK1_AFTER_RATE" = "$STOCK1_BEFORE_RATE" ] \
+    && [ "$RATE_LOG_LINES" = "5" ]; then
+    pass "the rate-limited order leaves no partial state (no order row, stock untouched, no notification line)"
+else
+    fail "the rate-limited order leaves no partial state (no order row, stock untouched, no notification line)" \
+        "orders $ORDERS_BEFORE_RATE→$ORDERS_AFTER_RATE stock $STOCK1_BEFORE_RATE→$STOCK1_AFTER_RATE notification lines $RATE_LOG_LINES"
+fi
+if [ "${RATE_ATTEMPTS:-0}" = "5" ]; then
+    pass "order_attempts records successful orders only (5 rows)"
+else
+    fail "order_attempts records successful orders only (5 rows)" "rows: ${RATE_ATTEMPTS:-0}"
+fi
 
 echo ""
 echo "Lookup rate limiting (must stay LAST — lockout is per-IP)"

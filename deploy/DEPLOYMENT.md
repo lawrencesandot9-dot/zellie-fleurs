@@ -112,6 +112,15 @@ sudo systemctl reload apache2
 
 ## 5. Enable HTTPS
 
+The shipped server configs already do the right thing: the port-80 vhost
+redirects **everything** to HTTPS, and the 443 vhost sends an HSTS header
+(`max-age=31536000`). This is mandatory, not optional — the session cookie
+authenticates the admin panel, so it must never travel over plaintext.
+Until TLS is live, the site effectively serves nothing but redirects.
+
+1. Point DNS at the server first (§3) — certbot needs a resolvable domain.
+2. Obtain the certificate:
+
 Nginx:
 
 ```bash
@@ -124,11 +133,17 @@ Apache:
 sudo certbot --apache -d shop.example.com -d www.shop.example.com
 ```
 
-After HTTPS is confirmed, optionally add HSTS:
+3. Certbot will usually rewrite the shipped vhosts with the real
+   certificate paths it created and install its own auto-renew timer
+   (`certbot renew --dry-run` to verify). If it creates a second port-80
+   vhost instead of using the shipped redirect, remove the duplicate so
+   exactly one redirect vhost remains.
 
-```nginx
-add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-```
+4. Verify after reload (§8 checklist): `curl -I http://your-domain` must
+   return `301` to `https://…`, and the HTTPS response must include
+   `Strict-Transport-Security` exactly once alongside the PHP security
+   headers (`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
+   `Referrer-Policy`, `Permissions-Policy`).
 
 ## 6. Firewall
 

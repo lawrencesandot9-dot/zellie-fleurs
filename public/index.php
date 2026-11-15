@@ -48,7 +48,7 @@ require ZF_ROOT . '/src/views/store_header.php';
             </div>
             <div class="hero__visual">
                 <div class="hero__image-wrap">
-                    <img src="/assets/img/hero-florals.jpg" alt="Soft blush and ivory floral arrangement by Zellie Fleurs" width="1600" height="2133">
+                    <img src="/assets/img/hero-florals.jpg" alt="Soft blush and ivory floral arrangement by Zellie Fleurs" width="960" height="1280">
                 </div>
                 <div class="hero__card">
                     <span class="hero__card-label">Signature note</span>

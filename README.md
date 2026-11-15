@@ -93,16 +93,17 @@ Tables:
 
 ```bash
 php tests/run.php
-./tests/http_test.sh
+bash tests/http_test.sh
 ```
 
-`tests/run.php` covers schema/seeding, catalogue queries, checkout validation, price manipulation, stock updates, duplicate prevention, status changes, tracking, admin authentication, product CRUD, image validation and settings. `tests/http_test.sh` starts a temporary PHP server with a temporary database and verifies the real storefront, admin login, product creation/upload/deactivation, checkout, tracking, status updates, logout and CSRF behaviour over HTTP.
+`tests/run.php` (134 checks) covers schema/seeding, catalogue queries, checkout validation, price manipulation, stock updates, duplicate prevention, status changes, tracking, admin authentication, product CRUD, image validation, settings, new-order notifications, order rate limiting and the same-day delivery cutoff. `tests/http_test.sh` (192 checks) starts temporary PHP servers with temporary databases and verifies the real storefront, cart/checkout (including noscript fallbacks and rate limiting), tracking, admin login, product creation/upload/deactivation, order status updates, admin session isolation, CSRF replay behaviour, security headers and broken-DB 500 handling over HTTP.
 
 Other checks:
 
 ```bash
 find . -name '*.php' -print0 | xargs -0 -n1 php -l
 node --check public/assets/js/app.js
+node --check public/assets/js/login-bloom.js
 sqlite3 data/shop.db 'PRAGMA integrity_check;'
 ```
 
@@ -112,10 +113,16 @@ sqlite3 data/shop.db 'PRAGMA integrity_check;'
 zellie-fleurs/
 ├── bin/
 │   ├── create_admin.php
-│   └── init_db.php
+│   ├── init_db.php
+│   └── migrate_to_supabase.php     # one-off export/backup tool (app runs on SQLite)
 ├── config/
-│   └── database.php
-├── data/                  # SQLite database + private setup files (not web-accessible)
+│   └── database.php                # DB bootstrap + security headers
+├── data/                           # SQLite DB, logs (0600, not web-accessible)
+├── deploy/
+│   ├── apache-zellie-fleurs.conf   # HTTPS redirect + SSL vhost
+│   ├── nginx-zellie-fleurs.conf    # HTTPS redirect + SSL server block
+│   ├── backup.sh
+│   └── DEPLOYMENT.md
 ├── public/                # web document root
 │   ├── admin/
 │   │   ├── index.php
@@ -127,21 +134,29 @@ zellie-fleurs/
 │   │   └── view_order.php
 │   ├── api/products.php
 │   ├── assets/
-│   ├── uploads/
+│   ├── uploads/                    # admin-uploaded product images (PHP execution denied)
+│   ├── 404.php
+│   ├── cart.php
 │   ├── checkout.php
 │   ├── index.php
+│   ├── product.php
+│   ├── router.php                  # router for PHP built-in server / testing
 │   └── track.php
 ├── src/
 │   ├── auth.php
 │   ├── database.php
+│   ├── error_handler.php
 │   ├── helpers.php
 │   ├── orders.php
 │   ├── products.php
 │   ├── settings.php
 │   └── views/
 ├── tests/
+│   ├── error_test.php
 │   ├── http_test.sh
-│   └── run.php
+│   ├── pagination_test.php
+│   ├── run.php
+│   └── schema_test.php
 ├── README.md
 └── serve.sh
 ```

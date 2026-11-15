@@ -6,6 +6,9 @@
     const MAX_QTY = 99;
     let productMap = new Map();
     let productsPromise = null;
+    // Set while the checkout page is open so a cart-drawer retry after a
+    // failed products fetch also re-renders the checkout summary.
+    let checkoutRerender = null;
     let cart = readCart();
 
     function readCart() {
@@ -225,6 +228,18 @@
         }
     }
 
+    function setCheckoutSubmitDisabled(submit, disabled) {
+        if (!submit) return;
+        submit.disabled = disabled;
+        // Mirror the existing .btn.is-disabled visual state used elsewhere.
+        submit.classList.toggle('is-disabled', disabled);
+        if (disabled) {
+            submit.setAttribute('aria-disabled', 'true');
+        } else {
+            submit.removeAttribute('aria-disabled');
+        }
+    }
+
     function renderCartInto(container, subtotalEl, checkoutLink, emptyMarkup) {
         if (!container) return;
 
@@ -391,7 +406,10 @@
 
             const retry = event.target.closest('[data-cart-retry]');
             if (retry) {
-                loadProducts(true).then(renderCart);
+                loadProducts(true).then(() => {
+                    renderCart();
+                    if (checkoutRerender) checkoutRerender();
+                });
             }
         });
 
@@ -565,8 +583,17 @@
                         <a class="btn btn--soft" href="/index.php#shop">Browse the collection</a>
                     </div>`;
                 if (totalEl) totalEl.textContent = money(0);
-                if (submit) submit.disabled = true;
+                setCheckoutSubmitDisabled(submit, true);
                 if (jsonInput) jsonInput.value = '[]';
+                return;
+            }
+
+            if (productMap.size === 0) {
+                // Products API failed: no prices, no trustworthy summary.
+                // Show the same retry panel the cart drawer uses and keep
+                // the submit disabled (items_json stays untouched at '[]').
+                summary.innerHTML = productsUnavailableMarkup();
+                setCheckoutSubmitDisabled(submit, true);
                 return;
             }
 
@@ -581,9 +608,11 @@
             }).join('');
 
             if (totalEl) totalEl.textContent = money(subtotal());
-            if (submit) submit.disabled = false;
+            setCheckoutSubmitDisabled(submit, false);
             if (jsonInput) jsonInput.value = JSON.stringify(cart.map((item) => ({ id: item.id, qty: item.qty })));
         }
+
+        checkoutRerender = renderCheckout;
 
         loadProducts().then(renderCheckout);
         updateBadge();
@@ -593,6 +622,15 @@
                 if (cart.length === 0) {
                     event.preventDefault();
                     toast('Your cart is empty. Please add an arrangement first.', 'error');
+                    return;
+                }
+
+                if (productMap.size === 0) {
+                    // Products never loaded: keep the customer from confirming
+                    // an order they cannot see priced. (Server totals are
+                    // recomputed safely, but the summary would be blank.)
+                    event.preventDefault();
+                    toast('We could not load the shop yet. Please try again in a moment.', 'error');
                     return;
                 }
 

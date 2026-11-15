@@ -5,6 +5,8 @@ declare(strict_types=1);
  * Order creation, validation, status changes, tracking and reporting.
  */
 
+require_once ZF_ROOT . '/src/settings.php';
+
 // 12 alphabet characters × 5 bits = 60 bits of entropy (~1e18 combinations).
 const ZF_ORDER_CODE_CHARS = 12;
 
@@ -75,7 +77,7 @@ function zf_normalize_order_items(mixed $rawItems, array &$errors): array
     return $quantities;
 }
 
-function zf_create_order(PDO $db, array $input, ?string $clientToken = null): array
+function zf_create_order(PDO $db, array $input, ?string $clientToken = null, array $options = []): array
 {
     $errors = [];
     $fieldErrors = [];
@@ -104,6 +106,15 @@ function zf_create_order(PDO $db, array $input, ?string $clientToken = null): ar
         $fieldErrors['delivery_address'] = true;
     }
 
+    // Clock for the same-day cutoff decision. $options['now'] may pin the
+    // clock for tests as an int unix timestamp; anything else (including
+    // null/absent) means the real time. This decision is PHP-only:
+    // date_default_timezone_set() runs in config/database.php (ZF_TZ, Asia
+    // Manila in every deploy), so date('Y-m-d')/date('G') below always
+    // follow the shop's local wall clock. SQLite datetime('now',
+    // 'localtime') is deliberately NOT consulted for this decision.
+    $nowTs = is_int($options['now'] ?? null) ? $options['now'] : time();
+
     $delivery = DateTimeImmutable::createFromFormat('!Y-m-d', $deliveryDate);
     $today = new DateTimeImmutable('today');
     if (!$delivery || $delivery->format('Y-m-d') !== $deliveryDate) {
@@ -114,6 +125,14 @@ function zf_create_order(PDO $db, array $input, ?string $clientToken = null): ar
         $fieldErrors['delivery_date'] = true;
     } elseif ($delivery > $today->modify('+180 days')) {
         $errors[] = 'Delivery dates can be scheduled up to 180 days ahead.';
+        $fieldErrors['delivery_date'] = true;
+    } elseif ($delivery->format('Y-m-d') === date('Y-m-d', $nowTs)
+        && (int) date('G', $nowTs) >= ZF_SAME_DAY_CUTOFF_HOUR) {
+        // Same-day cutoff, matching the storefront announcement. It sits
+        // after the past-date branch so a past date keeps its own message,
+        // and long before any DB write, token replay, rate-limit check or
+        // notification (validation rejections never burn the quota).
+        $errors[] = 'Same-day delivery is available only for orders placed before 12:00 PM. Please choose tomorrow or another date.';
         $fieldErrors['delivery_date'] = true;
     }
 
@@ -198,6 +217,16 @@ function zf_create_order(PDO $db, array $input, ?string $clientToken = null): ar
         }
     }
 
+    // Anti-abuse cap on successful checkouts per session/IP. It sits after
+    // validation and token-duplicate resolution (failed carts and idempotent
+    // replays must never burn the quota) and before the transaction, so a
+    // blocked order performs zero writes. $options can raise the cap for
+    // tests and long-running trusted clients; see zf_order_rate_limit_max().
+    $rateLimited = zf_order_rate_limit_blocked($db, $options);
+    if ($rateLimited !== null) {
+        return $rateLimited;
+    }
+
     $itemsJson = json_encode($lineItems, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
     try {
@@ -241,10 +270,20 @@ function zf_create_order(PDO $db, array $input, ?string $clientToken = null): ar
         $orderId = (int) $db->lastInsertId();
         $db->commit();
 
+        // The order is committed: it now counts against the flood cap.
+        // Best-effort, never able to fail the completed checkout.
+        zf_record_order_attempt($db, $options);
+
         $order = zf_get_order($db, $orderId);
         if ($order === null) {
             throw new RuntimeException('Order could not be reloaded.');
         }
+
+        // One notification per freshly created order (token-duplicate
+        // resolutions never reach this point, so the original creation is
+        // the only one that notifies). Best-effort by design: it swallows
+        // its own failures and can never fail the checkout.
+        zf_notify_new_order($order);
 
         return ['ok' => true, 'order' => $order, 'duplicate' => false];
     } catch (Throwable $e) {
@@ -568,5 +607,150 @@ function zf_record_lookup_failure(PDO $db, string $ip): void
         $stmt->execute([$ip]);
     } catch (Throwable $e) {
         zf_error_log('lookup-record-failure', $e->getMessage(), $e->getFile() . ':' . $e->getLine());
+    }
+}
+
+/**
+ * Order-flood throttling: a cap on SUCCESSFUL checkouts per session id and
+ * client IP within the window, mirroring the login_attempts/lookup_attempts
+ * style (dedicated attempts table, opportunistic cleanup of old rows,
+ * count-then-check, fail-open on storage trouble). Unlike those tables this
+ * one records successes rather than failures, so rejected carts never burn
+ * the quota and idempotent token replays are resolved before the cap is
+ * ever consulted.
+ */
+const ZF_ORDER_RATE_LIMIT_MAX = 5;
+const ZF_ORDER_RATE_WINDOW_MINUTES = 60;
+
+/**
+ * Latest local hour at which a same-day delivery can still be promised, per
+ * the storefront announcement ("Same-day delivery available on orders
+ * placed before 12:00 PM"). "Before 12:00 PM" is strict, so 12:00:00 sharp
+ * is already too late: an hour >= ZF_SAME_DAY_CUTOFF_HOUR rejects same-day.
+ */
+const ZF_SAME_DAY_CUTOFF_HOUR = 12;
+
+/**
+ * Creates the order_attempts table on first use. zf_db_init() owns the
+ * initial schema (this file must not edit it), so the table lives lazily
+ * here: idempotent CREATE TABLE IF NOT EXISTS guarded per connection so the
+ * DDL runs at most once per request. Timestamps match the other attempts
+ * tables exactly: TEXT, SQLite datetime('now', 'localtime') values.
+ */
+function zf_order_rate_limit_ready(PDO $db): void
+{
+    static $ready;
+    $ready ??= new WeakMap();
+    if (isset($ready[$db])) {
+        return;
+    }
+
+    $db->exec('
+        CREATE TABLE IF NOT EXISTS order_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL DEFAULT \'\',
+            ip_address TEXT NOT NULL DEFAULT \'\',
+            created_at TEXT NOT NULL DEFAULT (datetime(\'now\', \'localtime\'))
+        )
+    ');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_order_attempts_session_time ON order_attempts (session_id, created_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_order_attempts_ip_time ON order_attempts (ip_address, created_at)');
+
+    $ready[$db] = true;
+}
+
+/**
+ * Resolves the effective cap. Priority: $options['max_per_hour'], then the
+ * ZF_ORDER_RATE_LIMIT environment override (exported by the HTTP harness),
+ * then the shipped default. Values below 1 are never accepted, so neither
+ * knob can disable the cap entirely.
+ */
+function zf_order_rate_limit_max(array $options = []): int
+{
+    $max = $options['max_per_hour'] ?? null;
+    if (!is_int($max) || $max < 1) {
+        $env = getenv('ZF_ORDER_RATE_LIMIT');
+        $max = (is_string($env) && preg_match('/^[1-9][0-9]*$/', $env) === 1) ? (int) $env : ZF_ORDER_RATE_LIMIT_MAX;
+    }
+
+    return min($max, 100000);
+}
+
+/**
+ * Rate-limit keys for the request. The suite (and long-lived trusted
+ * callers) may pin them explicitly via $options['session_id'] and
+ * $options['ip']; otherwise the live session id and zf_client_ip() are
+ * used. An empty session id stays '' so the SQL key guards can skip that
+ * clause and rely on the IP fallback alone.
+ *
+ * @return array{0: string, 1: string}
+ */
+function zf_order_rate_limit_keys(array $options = []): array
+{
+    $session = isset($options['session_id'])
+        ? substr((string) $options['session_id'], 0, 128)
+        : (string) session_id();
+    $ip = isset($options['ip'])
+        ? substr((string) $options['ip'], 0, 45)
+        : zf_client_ip();
+
+    return [$session, $ip];
+}
+
+/**
+ * Returns the standard error array once the caller has reached the cap of
+ * successful orders in the window (keyed by session id OR client IP), or
+ * null when order creation may proceed. Rows older than the window are
+ * opportunistically deleted as part of the check, the same way the login
+ * and lookup throttles self-clean. Fails open: a throttling infrastructure
+ * problem must never take checkout down.
+ */
+function zf_order_rate_limit_blocked(PDO $db, array $options = []): ?array
+{
+    try {
+        zf_order_rate_limit_ready($db);
+        [$session, $ip] = zf_order_rate_limit_keys($options);
+        $window = '-' . ZF_ORDER_RATE_WINDOW_MINUTES . ' minutes';
+
+        $db->prepare("DELETE FROM order_attempts WHERE created_at < datetime('now', 'localtime', ?)")
+            ->execute([$window]);
+
+        $stmt = $db->prepare("
+            SELECT COUNT(*) FROM order_attempts
+            WHERE created_at >= datetime('now', 'localtime', ?)
+              AND ((? <> '' AND session_id = ?) OR (? <> '' AND ip_address = ?))
+        ");
+        $stmt->execute([$window, $session, $session, $ip, $ip]);
+
+        if ((int) $stmt->fetchColumn() >= zf_order_rate_limit_max($options)) {
+            return [
+                'ok' => false,
+                'errors' => ['Too many orders placed recently. Please contact us directly or try again in a little while.'],
+                'field_errors' => [],
+            ];
+        }
+    } catch (Throwable $e) {
+        zf_error_log('order-rate-limit-failure', $e->getMessage(), $e->getFile() . ':' . $e->getLine());
+    }
+
+    return null;
+}
+
+/**
+ * Records one successful order (called only after zf_create_order's commit)
+ * against the current session id AND client IP. Best-effort: a recording
+ * failure merely under-counts and must never fail an already-committed
+ * order.
+ */
+function zf_record_order_attempt(PDO $db, array $options = []): void
+{
+    try {
+        zf_order_rate_limit_ready($db);
+        [$session, $ip] = zf_order_rate_limit_keys($options);
+
+        $db->prepare('INSERT INTO order_attempts (session_id, ip_address) VALUES (?, ?)')
+            ->execute([$session, $ip]);
+    } catch (Throwable $e) {
+        zf_error_log('order-attempt-record-failure', $e->getMessage(), $e->getFile() . ':' . $e->getLine());
     }
 }
