@@ -2422,24 +2422,230 @@ p:last-child { margin-bottom: 0; }
 /* ---------- Login ---------- */
 
 .login-body {
+    /* Dark botanical backdrop for the canvas bloom; tints are baked into
+       the JS base gradient too, this is the no-canvas / pre-paint fallback. */
+    --plum-deep: #241a20;
+    --gold-line: rgba(214, 178, 122, 0.38);
+
     min-height: 100dvh;
     display: grid;
     place-items: center;
     padding: 1.2rem;
     background:
-        radial-gradient(circle at 12% 18%, rgba(243, 217, 220, 0.85), transparent 30%),
-        radial-gradient(circle at 88% 82%, rgba(233, 238, 231, 0.9), transparent 34%),
-        var(--ivory);
+        radial-gradient(circle at 14% 16%, rgba(243, 217, 220, 0.08), transparent 34%),
+        radial-gradient(circle at 86% 84%, rgba(111, 127, 106, 0.10), transparent 38%),
+        var(--plum-deep);
 }
 
-.login-shell { width: min(100%, 430px); }
+.login-bloom {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 0;
+    pointer-events: none;
+}
+
+/* Soft vignette above the canvas, below the panel. */
+.login-body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 42%, rgba(18, 11, 15, 0.42) 100%);
+}
+
+/* --- Decorative golden spheres + warm ambience ----------------------
+   CSS-only: no JS animation loops, no per-frame effects. The float is a
+   slow compositor-only transform, and reduced-motion users get a fully
+   static composition (see the reduced-motion opt-out below).
+
+   Layers:
+   • .login-body::before — fixed warm ambient glow + (desktop only) one
+     distant sphere in the open space left of the centered panel. Sits at
+     z-index 1: above the opaque bloom canvas, below the panel.
+   • .login-shell::before / ::after — spheres hugging the panel's outer
+     edges from behind (z-index -1 inside the shell's stacking context),
+     so they can never cover the username/password fields or buttons. */
+
+.login-body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    background:
+        radial-gradient(ellipse 130% 90% at 50% 46%, rgba(214, 178, 122, 0.09), transparent 58%);
+    animation: login-orb-drift 11s ease-in-out infinite alternate;
+}
+
+.login-shell::before,
+.login-shell::after {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    border-radius: 50%;
+    pointer-events: none;
+    /* Softly illuminated gold ball: bright crescent top-left, warm falloff. */
+    background: radial-gradient(circle at 32% 28%,
+        rgba(255, 246, 224, 0.9),
+        rgba(240, 200, 140, 0.58) 32%,
+        rgba(196, 148, 92, 0.24) 60%,
+        rgba(196, 148, 92, 0) 78%);
+}
+
+/* Larger sphere behind the panel's upper-left edge. */
+.login-shell::before {
+    top: -3.1rem;
+    left: -2.5rem;
+    width: 6.4rem;
+    height: 6.4rem;
+    opacity: 0.7;
+    animation: login-orb-drift 9s ease-in-out infinite alternate;
+}
+
+/* Smaller sphere behind the panel's lower-right edge. */
+.login-shell::after {
+    bottom: -2.2rem;
+    right: -1.7rem;
+    width: 4rem;
+    height: 4rem;
+    opacity: 0.6;
+    animation: login-orb-drift 13s ease-in-out infinite alternate-reverse;
+}
+
+@keyframes login-orb-drift {
+    from { transform: translate3d(0, 0, 0); }
+    to { transform: translate3d(0, -0.9rem, 0); }
+}
+
+/* Static golden composition for reduced-motion users. */
+@media (prefers-reduced-motion: reduce) {
+    .login-body::before,
+    .login-shell::before,
+    .login-shell::after {
+        animation: none;
+    }
+}
+
+/* Distant third sphere in the open left margin — desktop only, where the
+   centered panel leaves room and the bloom flower parks on the right. */
+@media (min-width: 900px) {
+    .login-body::before {
+        background:
+            radial-gradient(circle 5.5rem at 13% 24%,
+                rgba(255, 243, 216, 0.42),
+                rgba(233, 191, 128, 0.22) 42%,
+                rgba(196, 148, 92, 0.08) 66%,
+                rgba(196, 148, 92, 0) 80%),
+            radial-gradient(ellipse 130% 90% at 50% 46%, rgba(214, 178, 122, 0.09), transparent 58%);
+    }
+}
+
+.login-shell {
+    position: relative;
+    z-index: 1;
+    width: min(100%, 430px);
+}
 
 .login-panel {
-    background: var(--paper);
-    border: 1px solid var(--line-soft);
+    position: relative;
+    /* Near-opaque charcoal-plum by default: this doubles as the graceful
+       fallback for browsers without backdrop-filter. The @supports block
+       below lightens it into true translucent glass where blur is available. */
+    background: linear-gradient(168deg, rgba(46, 33, 43, 0.96), rgba(28, 20, 26, 0.96));
+    border: 1px solid var(--gold-line);
     border-radius: var(--radius-xl);
     padding: 1.6rem;
-    box-shadow: var(--shadow-md);
+    box-shadow:
+        0 26px 70px rgba(8, 4, 9, 0.6),
+        0 4px 16px rgba(8, 4, 9, 0.32),
+        /* soft warm golden ambience cast onto the page around the panel */
+        0 0 90px rgba(214, 178, 122, 0.07),
+        /* faint champagne inner sheen along the top edge */
+        inset 0 1px 0 rgba(255, 232, 192, 0.08),
+        inset 0 0 44px rgba(214, 178, 122, 0.03);
+    overflow: hidden;
+}
+
+/* True smoked glass where backdrop blur is supported: low-opacity charcoal
+   lets stars, particles and warm lighting read through the panel while the
+   restrained blur keeps text crisp. The near-opaque fallback above keeps
+   full contrast in browsers without backdrop-filter. */
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+    .login-panel {
+        background: linear-gradient(168deg, rgba(20, 16, 22, 0.28), rgba(20, 16, 22, 0.2));
+        -webkit-backdrop-filter: blur(14px) saturate(1.15);
+        backdrop-filter: blur(14px) saturate(1.15);
+    }
+}
+
+/* Thin champagne accent line along the top edge. */
+.login-panel::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: linear-gradient(90deg, rgba(214, 178, 122, 0), rgba(214, 178, 122, 0.8), rgba(214, 178, 122, 0));
+    pointer-events: none;
+}
+
+/* --- Dark-surface contrast for the panel's contents ------------------
+   Scoped to .login-panel so storefront/admin pages keep their light theme. */
+
+.login-panel .brand__name { color: #f6efe6; }
+.login-panel .brand__tagline { color: rgba(224, 190, 136, 0.8); }
+/* Lift the rose-stem logo mark slightly off the dark glass. */
+.login-panel .brand img { filter: brightness(1.18) saturate(1.05); }
+
+.login-panel .eyebrow { color: rgba(226, 190, 134, 0.92); }
+.login-panel .login-heading h1 { color: #f8f2ea; }
+.login-panel .login-heading p,
+.login-panel .login-help { color: rgba(240, 231, 219, 0.68); }
+.login-panel .login-help code {
+    background: rgba(255, 255, 255, 0.07);
+    border-color: rgba(255, 255, 255, 0.14);
+    color: #f2e9dd;
+}
+.login-panel .login-back { color: rgba(226, 190, 134, 0.88); }
+.login-panel .login-back:hover { color: #eed9ac; }
+
+.login-panel .field label { color: rgba(240, 231, 219, 0.82); }
+
+.login-panel .field input {
+    background: rgba(255, 255, 255, 0.055);
+    border-color: rgba(255, 255, 255, 0.16);
+    color: #f7f0e6;
+}
+
+.login-panel .field input::placeholder { color: rgba(240, 231, 219, 0.55); }
+
+.login-panel .field input:focus {
+    border-color: rgba(214, 178, 122, 0.7);
+    box-shadow: 0 0 0 3px rgba(214, 178, 122, 0.16);
+}
+
+/* Keep browser autofill from painting opaque white over the dark glass. */
+.login-panel .field input:-webkit-autofill {
+    -webkit-text-fill-color: #f7f0e6;
+    -webkit-box-shadow: 0 0 0 1000px #2b1f27 inset;
+    caret-color: #f7f0e6;
+    transition: background-color 9999s ease-out, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* Firefox equivalent (uses :autofill, not the -webkit- alias). */
+.login-panel .field input:autofill {
+    background: #2b1f27;
+    color: #f7f0e6;
+}
+
+.login-panel .flash--error {
+    background: rgba(169, 79, 86, 0.24);
+    border-color: rgba(226, 148, 154, 0.4);
+    color: #f4cdd0;
 }
 
 .brand--login { margin-bottom: 1.6rem; }
@@ -2510,6 +2716,22 @@ p:last-child { margin-bottom: 0; }
     .admin-topbar { flex-wrap: wrap; }
     .admin-user { max-width: 100%; }
     .login-panel { padding: 1.35rem; }
+    /* Small screens: shrink the panel-edge spheres and tuck them tighter
+       behind the corners so they stay clear of the form. */
+    .login-shell::before {
+        top: -2.1rem;
+        left: -1.7rem;
+        width: 4.4rem;
+        height: 4.4rem;
+        opacity: 0.5;
+    }
+    .login-shell::after {
+        bottom: -1.5rem;
+        right: -1.2rem;
+        width: 2.9rem;
+        height: 2.9rem;
+        opacity: 0.45;
+    }
 }
 
 @media (max-width: 419px) {
@@ -2577,6 +2799,18 @@ p:last-child { margin-bottom: 0; }
     .progress-step__label { font-size: 0.66rem; }
     .track-head { flex-wrap: nowrap; }
     .login-panel { padding: 2rem; }
+}
+
+/* Short viewports (mobile landscape, small laptops): keep the login shell
+   centered when it fits, start-aligned when it would overflow, so the top
+   of the panel never clips and the page scrolls when needed. `start center`
+   is the fallback for engines without `safe` alignment support. */
+@media (max-height: 620px) {
+    .login-body {
+        place-items: start center;
+        place-items: safe center;
+        padding-block: 2rem;
+    }
 }
 
 @media (min-width: 900px) {

@@ -40,12 +40,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#8f4e59">
+    <meta name="theme-color" content="#241a20">
     <title>Studio sign in | <?= zf_e($settings['shop_name']) ?></title>
     <link rel="icon" href="/assets/img/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/assets/css/style.css">
 </head>
 <body class="login-body">
+<canvas class="login-bloom" aria-hidden="true"></canvas>
 <main class="login-shell">
     <section class="login-panel">
         <a class="brand brand--login" href="/index.php">
@@ -83,5 +84,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <a class="login-back" href="/index.php">← Return to the storefront</a>
     </section>
 </main>
+<script src="/assets/js/login-bloom.js" defer></script>
 </body>
 </html>
