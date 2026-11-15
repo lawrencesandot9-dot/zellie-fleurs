@@ -23,13 +23,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
 }
 
 $search = zf_safe_text($_GET['q'] ?? '');
+// Invalid status values normalize to "all" so they never reach a chip, the
+// pagination links, or the record summary as a meaningless filter.
 $status = zf_safe_text($_GET['status'] ?? '');
+if (!in_array($status, zf_order_statuses(), true)) {
+    $status = '';
+}
 $sort = ($_GET['sort'] ?? 'newest') === 'oldest' ? 'oldest' : 'newest';
-$orders = zf_search_orders($db, $search, $status, $sort);
+$page = zf_safe_int($_GET['page'] ?? 1, 1);
+$ordersMeta = zf_orders_page($db, $search, $status, $sort, $page);
+$orders = $ordersMeta['rows'];
 
 /**
  * Build a chip/filter link that preserves the current search term and sort,
- * swapping only the status (empty string = all statuses).
+ * swapping only the status (empty string = all statuses). Changing filters
+ * returns to page 1: the filter forms and chips never carry a page param.
  */
 $chip_href = static function (string $statusValue) use ($search, $sort): string {
     $params = array_filter(
@@ -40,6 +48,12 @@ $chip_href = static function (string $statusValue) use ($search, $sort): string 
 
     return '/admin/orders.php' . ($query !== '' ? '?' . $query : '');
 };
+
+// Parameters that must survive pagination navigation.
+$ordersNavParams = array_filter(
+    ['q' => $search, 'status' => $status, 'sort' => $sort === 'oldest' ? 'oldest' : ''],
+    static fn (string $value): bool => $value !== '',
+);
 
 $pageTitle = 'Orders';
 $activeAdmin = 'orders';
@@ -79,7 +93,7 @@ require ZF_ROOT . '/src/views/admin_header.php';
     <div class="admin-section__head">
         <div>
             <span class="eyebrow">Order management</span>
-            <h2><?= count($orders) ?> <?= count($orders) === 1 ? 'order' : 'orders' ?></h2>
+            <h2><?= number_format((int) $ordersMeta['total']) ?> <?= $ordersMeta['total'] === 1 ? 'order' : 'orders' ?></h2>
         </div>
     </div>
 
@@ -90,7 +104,7 @@ require ZF_ROOT . '/src/views/admin_header.php';
         <?php endforeach; ?>
     </nav>
 
-    <?php if ($orders === []): ?>
+    <?php if ($ordersMeta['total'] === 0): ?>
         <div class="empty-state empty-state--wide">
             <img src="/assets/img/logo-mark.svg" alt="" width="48" height="48">
             <h3>No matching orders</h3>
@@ -163,6 +177,17 @@ require ZF_ROOT . '/src/views/admin_header.php';
                 </tbody>
             </table>
         </div>
+
+        <?php zf_render_pagination(
+            $ordersMeta['page'],
+            $ordersMeta['pages'],
+            $ordersMeta['total'],
+            $ordersMeta['page_size'],
+            '/admin/orders.php',
+            $ordersNavParams,
+            'order',
+            'orders'
+        ); ?>
     <?php endif; ?>
 </section>
 

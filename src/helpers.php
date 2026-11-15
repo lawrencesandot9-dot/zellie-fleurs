@@ -175,6 +175,104 @@ function zf_random_password(int $length = 16): string
 }
 
 /**
+ * Admin pagination constants, shared by src/orders.php and src/products.php
+ * (which may load in either order, so they live in this always-loaded file).
+ */
+
+// Default admin listing page size.
+const ZF_ADMIN_PAGE_SIZE = 20;
+
+// Upper bound for a requested page number: prevents absurd LIMIT/OFFSET
+// arithmetic from hostile query strings while staying far beyond any real
+// dataset (the offset is also validated against the computed page count).
+const ZF_MAX_PAGE = 10000;
+
+/**
+ * Normalize a requested page number against a computed page count:
+ * non-numeric or < 1 falls back to 1, values beyond ZF_MAX_PAGE clamp to
+ * ZF_MAX_PAGE, and out-of-range pages clamp gracefully to the last page.
+ */
+function zf_normalize_page(mixed $value, int $pages, int $default = 1): int
+{
+    $page = zf_safe_int($value, $default);
+    if ($page < 1) {
+        $page = $default;
+    }
+    $page = min($page, ZF_MAX_PAGE);
+    if ($pages > 0 && $page > $pages) {
+        $page = $pages;
+    }
+
+    return $page;
+}
+
+/**
+ * Build a page link that preserves the given query parameters (search,
+ * filters, sort) and carries the requested page number.
+ */
+function zf_page_href(string $base, array $params, int $page): string
+{
+    if ($page > 1) {
+        $params['page'] = $page;
+    } else {
+        unset($params['page']); // page 1 is the canonical URL
+    }
+    $query = http_build_query($params);
+
+    return $base . ($query !== '' ? '?' . $query : '');
+}
+
+/**
+ * Render the compact admin pagination controls: a record summary ("Showing
+ * 21–40 of 73 orders"), Previous/Next controls (rendered as disabled
+ * non-links when the direction is unavailable), and the current position.
+ * Deliberately server-rendered, no JavaScript, and safe on narrow screens
+ * (flex-wrap + column layout under 760px in the stylesheet).
+ *
+ * $params holds the parameters that must survive page navigation (search
+ * term, filters, sort); the caller passes only the relevant ones.
+ */
+function zf_render_pagination(
+    int $page,
+    int $pages,
+    int $total,
+    int $pageSize,
+    string $base,
+    array $params,
+    string $singular,
+    string $plural
+): void {
+    $from = $total === 0 ? 0 : (($page - 1) * $pageSize) + 1;
+    $to = min($total, $page * $pageSize);
+    $noun = $total === 1 ? $singular : $plural;
+
+    echo '<nav class="pagination" aria-label="' . zf_e($plural . ' pagination') . '">';
+    echo '<p class="pagination__summary">Showing '
+        . number_format($from) . '–' . number_format($to)
+        . ' of ' . number_format($total) . ' ' . zf_e($noun) . '</p>';
+    echo '<div class="pagination__controls">';
+
+    if ($page > 1) {
+        echo '<a class="btn btn--ghost btn--small pagination__link" rel="prev" href="'
+            . zf_e(zf_page_href($base, $params, $page - 1)) . '">‹ Previous</a>';
+    } else {
+        echo '<span class="btn btn--ghost btn--small pagination__link is-disabled" aria-disabled="true">‹ Previous</span>';
+    }
+
+    echo '<span class="pagination__status">Page ' . number_format($page) . ' of ' . number_format($pages) . '</span>';
+
+    if ($page < $pages) {
+        echo '<a class="btn btn--ghost btn--small pagination__link" rel="next" href="'
+            . zf_e(zf_page_href($base, $params, $page + 1)) . '">Next ›</a>';
+    } else {
+        echo '<span class="btn btn--ghost btn--small pagination__link is-disabled" aria-disabled="true">Next ›</span>';
+    }
+
+    echo '</div>';
+    echo '</nav>';
+}
+
+/**
  * Escape LIKE wildcards so user-supplied search terms act as substrings,
  * never as %, _ or backslash patterns. Pair the bound value with an
  * `ESCAPE '\'` clause on the LIKE predicate.

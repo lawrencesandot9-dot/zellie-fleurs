@@ -247,6 +247,98 @@ DETAIL=$(curl -sS -b "$JAR" -c "$JAR" -o "$TMP/order-detail.html" -w '%{http_cod
 [ "$DETAIL" = "200" ] && contains "$TMP/order-detail.html" "Order invoice" && contains "$TMP/order-detail.html" "Http Test Customer" && pass "admin can view full order details" || fail "admin can view full order details"
 
 echo ""
+echo "Admin pagination"
+echo "----------------"
+# Seed 25 orders (20 Pending, 5 Confirmed) with staggered timestamps: j=25 is
+# the newest seed, j=1 the oldest. Together with the single real order above
+# the admin list has 26 orders = 2 pages of 20 + 6.
+PAG_ORD_SQL=""
+for j in $(seq 1 25); do
+    PAG_CODE=$(printf 'ZF-PAG-%04d' "$j")
+    PAG_STATUS="Pending"
+    [ "$j" -gt 20 ] && PAG_STATUS="Confirmed"
+    PAG_MINS=$((26 - j))
+    PAG_ORD_SQL+="INSERT INTO orders (order_code,customer_name,contact_number,delivery_address,delivery_date,payment_method,gcash_ref,total_amount,items_json,status,created_at,updated_at) VALUES ('$PAG_CODE','Pagination Seed $j','09170000$(printf '%04d' "$j")','1 Pag Street, Test City','2027-01-20','GCash','PAGREF$j',500.0,'[]','$PAG_STATUS',datetime('now','localtime','-$PAG_MINS minutes'),datetime('now','localtime','-$PAG_MINS minutes'));"
+done
+sqlite3 "$TMP/shop.db" "$PAG_ORD_SQL"
+
+PAG_ORD_TOTAL=$(sqlite3 "$TMP/shop.db" "SELECT COUNT(*) FROM orders;")
+PAG_ORD_PAGES=$(( (PAG_ORD_TOTAL + 19) / 20 ))
+[ "$PAG_ORD_TOTAL" = "26" ] && pass "pagination seed produced 26 orders" || fail "pagination seed produced 26 orders" "got $PAG_ORD_TOTAL"
+
+curl -sS -b "$JAR" -c "$JAR" -o "$TMP/pag-orders-1.html" "$BASE/admin/orders.php"
+curl -sS -b "$JAR" -c "$JAR" -o "$TMP/pag-orders-2.html" "$BASE/admin/orders.php?page=2"
+
+contains "$TMP/pag-orders-1.html" "Page 1 of $PAG_ORD_PAGES" && pass "orders first page shows page status" || fail "orders first page shows page status"
+contains "$TMP/pag-orders-1.html" "Showing 1–20 of $PAG_ORD_TOTAL orders" && pass "orders first page shows record summary" || fail "orders first page shows record summary"
+contains "$TMP/pag-orders-2.html" "Page 2 of $PAG_ORD_PAGES" && pass "orders second page shows page status" || fail "orders second page shows page status"
+contains "$TMP/pag-orders-2.html" "Showing 21–$PAG_ORD_TOTAL of $PAG_ORD_TOTAL orders" && pass "orders second page shows record summary" || fail "orders second page shows record summary"
+contains "$TMP/pag-orders-2.html" "ZF-PAG-0001" && ! contains "$TMP/pag-orders-2.html" "ZF-PAG-0007" && pass "orders pages split without duplicates (oldest rows on page 2)" || fail "orders pages split without duplicates (oldest rows on page 2)"
+contains "$TMP/pag-orders-1.html" "ZF-PAG-0025" && ! contains "$TMP/pag-orders-1.html" "ZF-PAG-0001" && pass "newest-first ordering puts recent orders on page 1" || fail "newest-first ordering puts recent orders on page 1"
+contains "$TMP/pag-orders-1.html" "aria-disabled=\"true\"" && pass "Previous control disabled on first page" || fail "Previous control disabled on first page"
+PAG_NEXT=$(grep -o 'rel="next" href="[^"]*"' "$TMP/pag-orders-1.html" | head -1)
+case "$PAG_NEXT" in *page=2*) pass "Next control links to page 2" ;; *) fail "Next control links to page 2" "$PAG_NEXT" ;; esac
+contains "$TMP/pag-orders-2.html" "aria-disabled=\"true\"" && pass "Next control disabled on last page" || fail "Next control disabled on last page"
+
+curl -sS -b "$JAR" -c "$JAR" -o "$TMP/pag-orders-far.html" "$BASE/admin/orders.php?page=999"
+contains "$TMP/pag-orders-far.html" "Page $PAG_ORD_PAGES of $PAG_ORD_PAGES" && pass "out-of-range page clamps to last page" || fail "out-of-range page clamps to last page"
+curl -sS -b "$JAR" -c "$JAR" -o "$TMP/pag-orders-junk.html" "$BASE/admin/orders.php?page=abc"
+contains "$TMP/pag-orders-junk.html" "Page 1 of $PAG_ORD_PAGES" && pass "invalid page value falls back to first page" || fail "invalid page value falls back to first page"
+curl -sS -b "$JAR" -c "$JAR" -o "$TMP/pag-orders-neg.html" "$BASE/admin/orders.php?page=-3"
+contains "$TMP/pag-orders-neg.html" "Page 1 of $PAG_ORD_PAGES" && pass "negative page value falls back to first page" || fail "negative page value falls back to first page"
+
+# Search + sort preserved through pagination links
+curl -sS -b "$JAR" -c "$JAR" -o "$TMP/pag-orders-search.html" "$BASE/admin/orders.php?q=ZF-PAG-00&sort=oldest"
+contains "$TMP/pag-orders-search.html" "Page 1 of 2" && contains "$TMP/pag-orders-search.html" "Showing 1–20 of 25 orders" && pass "search narrows the paginated listing" || fail "search narrows the paginated listing"
+PAG_SEARCH_NEXT=$(grep -o 'rel="next" href="[^"]*"' "$TMP/pag-orders-search.html" | head -1)
+case "$PAG_SEARCH_NEXT" in *q=ZF-PAG-00*sort=oldest*page=2*) pass "pagination link preserves search and sort parameters" ;; *) fail "pagination link preserves search and sort parameters" "$PAG_SEARCH_NEXT" ;; esac
+
+# Status filter combined with pagination
+curl -sS -b "$JAR" -c "$JAR" -o "$TMP/pag-orders-pending.html" "$BASE/admin/orders.php?status=Pending"
+contains "$TMP/pag-orders-pending.html" "Showing 1–20 of 20 orders" && contains "$TMP/pag-orders-pending.html" "Page 1 of 1" && pass "status filter combined with pagination" || fail "status filter combined with pagination"
+
+# POST status update still works while viewing a later page
+PAG_CSRF=$(extract_hidden csrf_token < "$TMP/pag-orders-2.html")
+PAG_UPDATE=$(curl -sS -b "$JAR" -c "$JAR" -o /dev/null -w '%{http_code}' \
+    --data-urlencode "csrf_token=$PAG_CSRF" \
+    --data-urlencode "update_status=1" \
+    --data-urlencode "order_id=$ORDER_ID" \
+    --data-urlencode "status=Delivered" \
+    "$BASE/admin/orders.php?page=2")
+PAG_NEW_STATUS=$(sqlite3 "$TMP/shop.db" "SELECT status FROM orders WHERE id = $ORDER_ID;")
+[ "$PAG_UPDATE" = "303" ] && [ "$PAG_NEW_STATUS" = "Delivered" ] && pass "status update POST works while paginated" || fail "status update POST works while paginated" "status $PAG_UPDATE order status $PAG_NEW_STATUS"
+
+# Seed 25 products so the catalogue crosses a page boundary
+PAG_PROD_SQL=""
+for j in $(seq 1 25); do
+    PAG_NAME="Pagination Product $(printf '%02d' "$j")"
+    PAG_PROD_SQL+="INSERT INTO products (name,category,price,description,image_url,stock_quantity,is_active) VALUES ('$PAG_NAME','Bouquets',150.0,'Seed product for pagination tests.','assets/img/products/rosy-pastel.jpg',5,1);"
+done
+sqlite3 "$TMP/shop.db" "$PAG_PROD_SQL"
+
+PAG_PROD_TOTAL=$(sqlite3 "$TMP/shop.db" "SELECT COUNT(*) FROM products;")
+PAG_PROD_PAGES=$(( (PAG_PROD_TOTAL + 19) / 20 ))
+curl -sS -b "$JAR" -c "$JAR" -o "$TMP/pag-products-1.html" "$BASE/admin/products.php"
+curl -sS -b "$JAR" -c "$JAR" -o "$TMP/pag-products-2.html" "$BASE/admin/products.php?page=2"
+
+contains "$TMP/pag-products-1.html" "Page 1 of $PAG_PROD_PAGES" && pass "products first page shows page status" || fail "products first page shows page status"
+contains "$TMP/pag-products-2.html" "Page 2 of $PAG_PROD_PAGES" && pass "products second page shows page status" || fail "products second page shows page status"
+contains "$TMP/pag-products-2.html" "Showing 21–$PAG_PROD_TOTAL of $PAG_PROD_TOTAL products" && pass "products second page shows record summary" || fail "products second page shows record summary"
+contains "$TMP/pag-products-2.html" "Pagination Product 01" && ! contains "$TMP/pag-products-2.html" "Pagination Product 25" && pass "products pages split without duplicates" || fail "products pages split without duplicates"
+curl -sS -b "$JAR" -c "$JAR" -o "$TMP/pag-products-far.html" "$BASE/admin/products.php?page=500"
+contains "$TMP/pag-products-far.html" "Page $PAG_PROD_PAGES of $PAG_PROD_PAGES" && pass "products out-of-range page clamps to last page" || fail "products out-of-range page clamps to last page"
+contains "$TMP/pag-products-2.html" 'admin/products.php?edit=' && pass "edit links preserved on paginated product list" || fail "edit links preserved on paginated product list"
+
+# Product toggle still works from a paginated view
+PAG_TOGGLE_ID=$(sqlite3 "$TMP/shop.db" "SELECT id FROM products WHERE name = 'Pagination Product 05' LIMIT 1;")
+PAG_TOGGLE=$(curl -sS -b "$JAR" -c "$JAR" -o /dev/null -w '%{http_code}' \
+    --data-urlencode "csrf_token=$PAG_CSRF" \
+    --data-urlencode "action=toggle" \
+    --data-urlencode "id=$PAG_TOGGLE_ID" \
+    "$BASE/admin/products.php?page=2")
+[ "$PAG_TOGGLE" = "303" ] && pass "product toggle POST works while paginated" || fail "product toggle POST works while paginated" "status $PAG_TOGGLE"
+
+echo ""
 echo "Logout and security"
 echo "-------------------"
 curl -sS -b "$JAR" -c "$JAR" -o "$TMP/admin-products3.html" "$BASE/admin/products.php"

@@ -87,7 +87,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['edit'])) {
     ];
 }
 
-$products = zf_get_products($db, ['active_only' => false]);
+$page = zf_safe_int($_GET['page'] ?? 1, 1);
+$productsMeta = zf_products_page($db, $page, false);
+$products = $productsMeta['rows'];
 $categories = zf_get_categories($db, false);
 $isEditing = $form['id'] > 0;
 $previewImage = $form['image_url'] !== '' ? zf_image_url($form['image_url']) : '/assets/img/flower-placeholder.svg';
@@ -191,7 +193,7 @@ require ZF_ROOT . '/src/views/admin_header.php';
         <div class="admin-section__head">
             <div>
                 <span class="eyebrow">Storefront catalogue</span>
-                <h2><?= count($products) ?> <?= count($products) === 1 ? 'product' : 'products' ?></h2>
+                <h2><?= number_format((int) $productsMeta['total']) ?> <?= $productsMeta['total'] === 1 ? 'product' : 'products' ?></h2>
             </div>
         </div>
 
@@ -236,6 +238,17 @@ require ZF_ROOT . '/src/views/admin_header.php';
                     </article>
                 <?php endforeach; ?>
             </div>
+
+            <?php zf_render_pagination(
+                $productsMeta['page'],
+                $productsMeta['pages'],
+                $productsMeta['total'],
+                $productsMeta['page_size'],
+                '/admin/products.php',
+                [], // the catalogue has no user-controlled filters to preserve
+                'product',
+                'products'
+            ); ?>
         <?php endif; ?>
     </section>
 </div>

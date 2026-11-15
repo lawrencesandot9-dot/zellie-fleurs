@@ -11,25 +11,14 @@ function zf_get_products(PDO $db, array $filters = []): array
     $search = trim((string) ($filters['search'] ?? ''));
     $category = trim((string) ($filters['category'] ?? ''));
 
-    $sql = 'SELECT * FROM products WHERE 1 = 1';
-    $params = [];
+    // Delegates to the shared clause helpers so the storefront listing and
+    // the paginated admin listing can never diverge. Produces the exact same
+    // SQL and parameter names as the pre-pagination implementation.
+    [$where, $params] = zf_products_filter_clause($activeOnly, $search, $category);
 
-    if ($activeOnly) {
-        $sql .= ' AND is_active = 1';
-    }
-    if ($search !== '') {
-        $sql .= " AND (name LIKE :s1 ESCAPE '\\' OR description LIKE :s2 ESCAPE '\\' OR category LIKE :s3 ESCAPE '\\')";
-        $term = zf_like_term($search);
-        $params[':s1'] = $term;
-        $params[':s2'] = $term;
-        $params[':s3'] = $term;
-    }
-    if ($category !== '') {
-        $sql .= ' AND category = :category';
-        $params[':category'] = $category;
-    }
-
-    $sql .= ' ORDER BY is_active DESC, stock_quantity > 0 DESC, datetime(created_at) DESC, id DESC';
+    $sql = 'SELECT * FROM products'
+        . $where
+        . zf_products_order_clause();
 
     $stmt = $db->prepare($sql);
     $stmt->execute($params);
@@ -48,6 +37,95 @@ function zf_get_product(PDO $db, int $id, bool $activeOnly = false): ?array
     $product = $stmt->fetch();
 
     return $product ?: null;
+}
+
+/**
+ * Shared WHERE builder for product listings (visibility, search, category).
+ * Used by both the COUNT and the page SELECT so the count always matches the
+ * listing. The admin catalogue passes active_only = false; the storefront
+ * keeps using zf_get_products(), which is unchanged.
+ *
+ * @return array{0: string, 1: array<string, string>}
+ */
+function zf_products_filter_clause(bool $activeOnly, string $search, string $category): array
+{
+    $sql = ' WHERE 1 = 1';
+    $params = [];
+
+    if ($activeOnly) {
+        $sql .= ' AND is_active = 1';
+    }
+    if ($search !== '') {
+        $sql .= " AND (name LIKE :s1 ESCAPE '\\' OR description LIKE :s2 ESCAPE '\\' OR category LIKE :s3 ESCAPE '\\')";
+        $term = zf_like_term($search);
+        $params[':s1'] = $term;
+        $params[':s2'] = $term;
+        $params[':s3'] = $term;
+    }
+    if ($category !== '') {
+        $sql .= ' AND category = :category';
+        $params[':category'] = $category;
+    }
+
+    return [$sql, $params];
+}
+
+/**
+ * The fixed catalogue ordering, unchanged from zf_get_products(): active
+ * first, in-stock first, then newest. There is no user-controlled sort
+ * parameter for products, so the clause is a server-side constant.
+ */
+function zf_products_order_clause(): string
+{
+    return ' ORDER BY is_active DESC, stock_quantity > 0 DESC, datetime(created_at) DESC, id DESC';
+}
+
+/**
+ * Server-side paginated product listing for the admin catalogue.
+ *
+ * SQL LIMIT/OFFSET with prepared statements, a separate filtered COUNT, and
+ * the same page normalization as zf_orders_page() (page < 1 becomes 1,
+ * out-of-range pages clamp to the last page, offset always >= 0).
+ *
+ * @return array{rows: list<array<string, mixed>>, total: int, pages: int, page: int, page_size: int}
+ */
+function zf_products_page(
+    PDO $db,
+    int $page = 1,
+    bool $activeOnly = false,
+    string $search = '',
+    string $category = '',
+    int $pageSize = ZF_ADMIN_PAGE_SIZE
+): array {
+    $pageSize = max(1, min($pageSize, 200));
+
+    [$where, $params] = zf_products_filter_clause($activeOnly, $search, $category);
+
+    $countStmt = $db->prepare('SELECT COUNT(*) FROM products' . $where);
+    $countStmt->execute($params);
+    $total = (int) $countStmt->fetchColumn();
+
+    $pages = max(1, (int) ceil($total / $pageSize));
+    $page = zf_normalize_page($page, $pages);
+    $offset = ($page - 1) * $pageSize;
+
+    $sql = 'SELECT * FROM products'
+        . $where
+        . zf_products_order_clause()
+        . ' LIMIT :limit OFFSET :offset';
+    $params[':limit'] = $pageSize;
+    $params[':offset'] = $offset;
+
+    $stmt = $db->prepare($sql);
+    $stmt->execute($params);
+
+    return [
+        'rows' => $stmt->fetchAll(),
+        'total' => $total,
+        'pages' => $pages,
+        'page' => $page,
+        'page_size' => $pageSize,
+    ];
 }
 
 function zf_get_categories(PDO $db, bool $activeOnly = true): array

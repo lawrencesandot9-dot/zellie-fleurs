@@ -420,9 +420,31 @@ function zf_order_analytics(PDO $db): array
     ];
 }
 
-function zf_search_orders(PDO $db, string $search = '', string $status = '', string $sort = 'newest'): array
+// Page-size and page-cap constants live in src/helpers.php so both
+// src/orders.php and src/products.php share them regardless of load order.
+
+/**
+ * Explicit sort allowlist for admin order listings. The sort parameter is
+ * never interpolated from user input: only these two clauses can ever reach
+ * the SQL. Reused by zf_search_orders() so the wording cannot diverge.
+ */
+function zf_order_sort_clause(string $sort): string
 {
-    $sql = 'SELECT * FROM orders WHERE 1 = 1';
+    return $sort === 'oldest'
+        ? ' ORDER BY datetime(created_at) ASC, id ASC'
+        : ' ORDER BY datetime(created_at) DESC, id DESC';
+}
+
+/**
+ * Shared WHERE builder for admin order listings (search + status filter).
+ * Returns [sql-fragment, params]. Both the COUNT and the page SELECT use the
+ * exact same fragment, so the count always matches the listing.
+ *
+ * @return array{0: string, 1: array<string, string>}
+ */
+function zf_orders_filter_clause(string $search, string $status): array
+{
+    $sql = ' WHERE 1 = 1';
     $params = [];
 
     if ($search !== '') {
@@ -438,10 +460,71 @@ function zf_search_orders(PDO $db, string $search = '', string $status = '', str
         $params[':status'] = $status;
     }
 
-    $sql .= $sort === 'oldest'
-        ? ' ORDER BY datetime(created_at) ASC, id ASC'
-        : ' ORDER BY datetime(created_at) DESC, id DESC';
+    return [$sql, $params];
+}
 
+/**
+ * Server-side paginated order listing for the admin area.
+ *
+ * Uses SQL LIMIT/OFFSET (never fetches the full dataset), prepared
+ * statements for pagination and filter values, a separate filtered COUNT
+ * query, and an allowlisted sort clause. The requested page is normalized:
+ * <1 becomes 1, values beyond the computed page count clamp to the last
+ * page, values beyond ZF_MAX_PAGE clamp to ZF_MAX_PAGE first. The offset is
+ * always >= 0 by construction.
+ *
+ * @return array{rows: list<array<string, mixed>>, total: int, pages: int, page: int, page_size: int}
+ */
+function zf_orders_page(
+    PDO $db,
+    string $search = '',
+    string $status = '',
+    string $sort = 'newest',
+    int $page = 1,
+    int $pageSize = ZF_ADMIN_PAGE_SIZE
+): array {
+    $pageSize = max(1, min($pageSize, 200));
+
+    [$where, $params] = zf_orders_filter_clause($search, $status);
+
+    $countStmt = $db->prepare('SELECT COUNT(*) FROM orders' . $where);
+    $countStmt->execute($params);
+    $total = (int) $countStmt->fetchColumn();
+
+    $pages = max(1, (int) ceil($total / $pageSize));
+    $page = zf_normalize_page($page, $pages);
+    $offset = ($page - 1) * $pageSize;
+
+    $sql = 'SELECT * FROM orders'
+        . $where
+        . zf_order_sort_clause($sort)
+        . ' LIMIT :limit OFFSET :offset';
+    $params[':limit'] = $pageSize;
+    $params[':offset'] = $offset;
+
+    $stmt = $db->prepare($sql);
+    $stmt->execute($params);
+
+    return [
+        'rows' => $stmt->fetchAll(),
+        'total' => $total,
+        'pages' => $pages,
+        'page' => $page,
+        'page_size' => $pageSize,
+    ];
+}
+
+/**
+ * Unpaginated order search, retained as a stable compatibility API for the
+ * unit test suite (and any small listings); the admin orders page itself
+ * uses zf_orders_page(). Delegates to the same filter and sort helpers, so
+ * the two paths cannot diverge.
+ */
+function zf_search_orders(PDO $db, string $search = '', string $status = '', string $sort = 'newest'): array
+{
+    [$where, $params] = zf_orders_filter_clause($search, $status);
+
+    $sql = 'SELECT * FROM orders' . $where . zf_order_sort_clause($sort);
     $stmt = $db->prepare($sql);
     $stmt->execute($params);
 
